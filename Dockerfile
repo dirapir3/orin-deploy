@@ -12,7 +12,7 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 COPY server/package.json server/package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --include=dev
 COPY server/tsconfig.json server/tsconfig.build.json ./
 COPY server/src ./src
 RUN npx tsc -p tsconfig.build.json && npm prune --omit=dev
