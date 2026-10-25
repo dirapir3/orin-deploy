@@ -113,12 +113,13 @@ export const createReminderTool = defineTool({
     'Schedule a reminder notification on the user\'s phone. Only call this when you know the exact time; if the user did not say when, ask them first. Convert relative times ("in 20 minutes", "tomorrow 9am") using the current date/time and the user\'s timezone.',
   schema: z.object({
     text: z.string().min(1).max(300).describe('What to remind about, phrased for the notification'),
-    due_at: z.string().min(10).max(40).describe('ISO 8601 date-time with timezone offset, e.g. 2026-10-15T09:00:00-07:00'),
+    due_at: z.string().min(10).max(40).optional().describe('ISO 8601 date-time with the user\'s timezone offset, e.g. 2026-10-15T09:00:00-07:00. Use for a clock time ("tomorrow 9am").'),
+    in_minutes: z.number().positive().max(525600).optional().describe('For a relative time ("in 20 minutes", "in 2 hours"): minutes from now. The server does the maths; prefer this over due_at for relative times.'),
   }),
   label: () => 'Setting a reminder…',
   handler: async (a, ctx) => {
-    const due = Date.parse(a.due_at);
-    if (!Number.isFinite(due)) return { ok: false, content: `"${a.due_at}" is not a valid ISO date-time. Ask the user for the time or fix the format.`, summary: 'Invalid time' };
+    const due = a.in_minutes ? Date.now() + a.in_minutes * 60_000 : Date.parse(a.due_at ?? '');
+    if (!Number.isFinite(due)) return { ok: false, content: `"${a.due_at ?? ''}" is not a valid ISO date-time. Ask the user for the time or fix the format.`, summary: 'Invalid time' };
     if (due < Date.now() - 60_000) return { ok: false, content: `That time (${a.due_at}) is in the past. Check the date or ask the user.`, summary: 'Time is in the past' };
     const r = ctx.services.store.createReminder(ctx.owner, a.text, due);
     const when = new Date(due).toLocaleString('en-US', { timeZone: ctx.timezone || 'UTC', dateStyle: 'medium', timeStyle: 'short' });

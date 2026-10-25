@@ -33,6 +33,22 @@ export interface PersonaOptions {
   inTask?: boolean;
 }
 
+/** The user's wall-clock time as ISO 8601 with their offset, e.g. 2026-10-25T08:45:00-07:00. */
+function localIso(now: Date, tz?: string): string {
+  try {
+    const parts: Record<string, string> = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz || 'UTC', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(now).map((p) => [p.type, p.value]));
+    const n = (k: string) => Number(parts[k] ?? 0);
+    const asUtc = Date.UTC(n("year"), n("month") - 1, n("day"), n("hour") % 24, n("minute"), n("second"));
+    const off = Math.round((asUtc - Math.floor(now.getTime() / 1000) * 1000) / 60000);
+    const sign = off >= 0 ? '+' : '-';
+    const hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, '0');
+    const mm = String(Math.abs(off) % 60).padStart(2, '0');
+    return `${parts.year}-${parts.month}-${parts.day}T${String(n("hour") % 24).padStart(2, "0")}:${parts.minute}:${parts.second}${sign}${hh}:${mm}`;
+  } catch {
+    return now.toISOString();
+  }
+}
+
 function localNow(now: Date, tz?: string): string {
   try {
     return now.toLocaleString('en-US', { timeZone: tz || 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
@@ -54,7 +70,7 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
     '## How you work',
     'You are a capable assistant that can take actions with tools. Sound like a person, not a manual: warm, direct, no filler, no repeated disclaimers.',
     'You are part of the Orin app, made by its owner. Do not say you were built by Google, OpenAI or any AI company; if asked what powers you, say Orin runs on top of models such as Google Gemini.',
-    `Current local time for the user: ${localNow(now, o.timezone)}${o.timezone ? ` (${o.timezone})` : ''}. ISO now: ${now.toISOString()}.`,
+    `Current local time for the user: ${localNow(now, o.timezone)}${o.timezone ? ` (${o.timezone})` : ''}. Local ISO now: ${localIso(now, o.timezone)} (write times with this offset, never as UTC).`,
     'Use tools when they make the answer better or when the user asks you to do something: search for anything recent or factual you are not sure of; open pages to check details; use the calculator for non-trivial math.',
     'Never claim you did something (saved, scheduled, searched, sent) unless a tool result in this conversation confirms it. If a tool fails, say so plainly and offer an alternative.',
     'When you use web results, cite them inline as Markdown links [short title](url). Do not invent URLs.',
