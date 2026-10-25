@@ -42,6 +42,20 @@ export class AgentRuntime {
   readonly services: AgentServices;
   readonly config: AppConfig;
   private provider: ChatProvider | null;
+  /** the user's own AI key (Profile > AI keys), per account; kept in memory only, refreshed by each chat */
+  private userProviders = new Map<string, { p: ChatProvider; until: number }>();
+
+  setUserProvider(account: string, p: ChatProvider | null): void {
+    if (p) this.userProviders.set(account, { p, until: Date.now() + 12 * 3600_000 });
+    else this.userProviders.delete(account);
+  }
+
+  /** the provider for one owner's background work: their own key when they set one, else the server's */
+  providerFor(owner: string): ChatProvider | null {
+    const u = this.userProviders.get(owner.split('#')[0]!);
+    if (u && u.until > Date.now()) return u.p;
+    return this.provider;
+  }
   private timers: NodeJS.Timeout[] = [];
   private running = new Map<string, AbortController>();
   private active = 0;
@@ -230,7 +244,7 @@ export class AgentRuntime {
     const timeout = setTimeout(() => ctrl.abort(), 45 * 60_000);
     this.store.addTaskEvent(task.id, 'started', 'Started');
     try {
-      if (!this.provider) throw new Error('No AI model is configured on the server.');
+      if (!this.providerFor(task.owner)) throw new Error('No AI model is configured on the server.');
       const tz = typeof task.input.timezone === 'string' ? task.input.timezone : undefined;
       if (task.kind === 'deep_research') {
         const { report, noteId, summary } = await this.deepResearch(task, ctrl.signal);
@@ -284,7 +298,7 @@ export class AgentRuntime {
   }
 
   private async runAgentTask(task: Task, prompt: string, tz: string | undefined, signal: AbortSignal): Promise<string> {
-    const provider = this.provider!;
+    const provider = this.providerFor(task.owner)!;
     const tools = this.tools.available(task.owner, this.services, { inTask: true });
     const memories = this.store.listMemories(task.owner, 20);
     const system = buildAgentSystemPrompt(undefined, 'task', { character: task.owner.includes('#') ? task.owner.split('#')[1] : 'orin', timezone: tz, memories, tools: tools.map((t) => t.name), unavailable: this.unavailable(task.owner), inTask: true });

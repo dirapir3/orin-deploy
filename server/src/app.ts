@@ -28,6 +28,7 @@ import { googleHandleCallback } from './agent/connectors.js';
 import { createAdminRouter, defaultStatusFile } from './admin/router.js';
 import type { AccountService } from './services/supabaseAdmin.js';
 import type { UsageSink } from './services/usage.js';
+import { aiKeysRouter } from './routes/aiKeys.js';
 
 export interface Deps {
   config: AppConfig;
@@ -65,7 +66,7 @@ export function createApp(deps: Deps) {
   app.use(
     cors({
       origin: (origin, cb) => cb(null, !origin || config.corsOrigins.includes(origin)),
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Guest-Id'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Guest-Id', 'X-Orin-Agent', 'X-Orin-AI'],
       methods: ['GET', 'POST', 'DELETE', 'PATCH', 'PUT'],
     }),
   );
@@ -162,6 +163,8 @@ export function createApp(deps: Deps) {
   const guestOk = authenticate(config, verifier, 'guest-ok');
   const userOnly = authenticate(config, verifier, 'user');
 
+  // Profile > AI keys: the user's own AI keys, kept in the Secure Vault
+  app.use('/v1/ai', guestOk, createRateLimiter(config, 'ai-keys', 2), aiKeysRouter(deps));
   app.use('/v1/chat', guestOk, createRateLimiter(config, 'chat'), chatRouter(deps));
   app.use('/v1/voice', guestOk, createRateLimiter(config, 'voice', 3), voiceRouter(deps));
   app.use('/v1/files', guestOk, createRateLimiter(config, 'files', 0.5), filesRouter(deps));

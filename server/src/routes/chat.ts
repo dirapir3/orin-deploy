@@ -7,7 +7,9 @@ import { AppError, toAppError } from '../errors.js';
 import { logger } from '../logger.js';
 import { ChatRequestSchema, TitleRequestSchema } from '../schemas.js';
 import { parseBody } from './util.js';
+import { requesterKey } from '../middleware/auth.js';
 import { streamAgentChat } from './agentChat.js';
+import { AI_HEADER, requestAi, type UserProviders } from '../ai/userKeys.js';
 
 function sse(res: Response, event: string, data: unknown) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -19,9 +21,12 @@ export function chatRouter(deps: Deps) {
 
   r.post('/', async (req: Request, res: Response, next) => {
     let body;
+    let user: UserProviders | null = null;
     try {
       body = parseBody(ChatRequestSchema, req.body);
-      if (!providers.chat) {
+      // the user's own key (Profile > AI keys), read from the vault; the server's keys are the backup
+      user = requestAi(deps, requesterKey(req), req.get(AI_HEADER));
+      if (!providers.chat && !user) {
         throw new AppError(
           'provider_not_configured',
           deps.config.chat.provider !== 'none' && !deps.config.chat.ready
@@ -32,10 +37,10 @@ export function chatRouter(deps: Deps) {
     } catch (err) {
       return next(err);
     }
-    if (deps.agent?.enabled && providers.agent && body.agent !== false) {
-      return streamAgentChat(deps, req, res, body).catch(next);
+    if (deps.agent && (deps.agent.enabled || (config.agent.enabled && user?.agent)) && (user?.agent ?? providers.agent) && body.agent !== false) {
+      return streamAgentChat(deps, req, res, body, user).catch(next);
     }
-    const provider = providers.chat;
+    const provider = user?.chat ?? providers.chat!;
     let ctx;
     try {
       ctx = buildContext(body, config, { allowImages: provider.supportsVision || provider.isDemo });
@@ -122,7 +127,12 @@ export function chatRouter(deps: Deps) {
       const body = parseBody(TitleRequestSchema, req.body);
       const firstUser = body.messages.find((m) => m.role === 'user')?.content ?? '';
       const fallback = fallbackTitle(firstUser);
-      const provider = providers.chat;
+      let provider = providers.chat;
+      try {
+        provider = requestAi(deps, requesterKey(req), req.get(AI_HEADER))?.chat ?? provider;
+      } catch {
+        // an unreadable key never blocks a title
+      }
       if (!provider || provider.isDemo) return res.json({ title: fallback, source: 'fallback' });
       const started = Date.now();
       try {

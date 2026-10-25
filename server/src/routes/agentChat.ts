@@ -4,6 +4,7 @@ import type { Deps } from '../app.js';
 import { AppError, toAppError } from '../errors.js';
 import { logger } from '../logger.js';
 import { agentIdOf, agentOwnerKey, requesterKey } from '../middleware/auth.js';
+import type { UserProviders } from '../ai/userKeys.js';
 import type { ChatRequestBody } from '../schemas.js';
 import { buildAgentContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
@@ -22,10 +23,11 @@ export function requestBaseUrl(req: Request): string {
  *   event: tool  data: {phase:'start', id, name, label}
  *   event: tool  data: {phase:'end', id, name, ok, summary, display?}
  */
-export async function streamAgentChat(deps: Deps, req: Request, res: Response, body: ChatRequestBody) {
+export async function streamAgentChat(deps: Deps, req: Request, res: Response, body: ChatRequestBody, user: UserProviders | null = null) {
   const { config, usage } = deps;
   const agent = deps.agent!;
-  const provider = deps.providers.agent!;
+  // the user's own key first (its model is pinned inside), the server's keys as backup
+  const provider = user?.agent ?? deps.providers.agent!;
   const owner = agentOwnerKey(req);
   const account = requesterKey(req);
   const timezone = body.timezone && isValidTimezone(body.timezone) ? body.timezone : undefined;
