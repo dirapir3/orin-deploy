@@ -14,6 +14,7 @@ import { MANAGED_ENV, SECTIONS, findCard, type AdminCard } from './fields.js';
 import { runCardTest, type TestResult } from './tests.js';
 import { ADMIN_CSS, ADMIN_JS, loginPage, messagePage, passwordPage, settingsPage, setupPage } from './page.js';
 import { AdminCredential, passwordProblem } from './credential.js';
+import { e2bAdminRoutes } from './e2bAdmin.js';
 
 /** The objects the running server uses; reloads replace their contents in place. */
 export interface LiveRuntime {
@@ -395,6 +396,9 @@ export function createAdminRouter(rt: LiveRuntime, opts: AdminOptions): express.
     saveStatus();
     res.json(result);
   });
+
+  // Owner tools for Orin's E2B workspace template (build + test jobs) with the server's own key.
+  router.use(e2bAdminRoutes(() => rt.config.integrations.e2bKey, requireSession, apiLimiter));
 
   return router;
 }

@@ -5,10 +5,17 @@ import { SANDBOX_WORKDIR, type ExecResult, type SandboxProvider, type SandboxSes
  * E2B (e2b.dev) provider. Uses the official SDK (@e2b/code-interpreter, which includes the base
  * `e2b` Sandbox API). The default template is E2B's code-interpreter image: Debian with Python 3
  * (numpy, pandas, matplotlib...), Node.js, git and the usual command line tools.
- * E2B_TEMPLATE (env) picks another template, e.g. one with Chromium baked in.
+ * By default Orin's own workspace template is used (see E2B_DEFAULT_TEMPLATE).
  */
 
 const require = createRequire(import.meta.url);
+
+/**
+ * Orin's workspace template (built from server/e2b/workspace.Dockerfile with the admin API): Ubuntu with
+ * Node LTS, Expo/EAS, JDK 17, the Android SDK, Chromium + Playwright, office/PDF/image tools.
+ * E2B_TEMPLATE overrides it; set E2B_TEMPLATE to an empty string for E2B's default image.
+ */
+export const E2B_DEFAULT_TEMPLATE = 'orin-workspace';
 const SDK = '@e2b/code-interpreter';
 
 function hasSdk(): boolean {
@@ -115,8 +122,11 @@ export class E2BProvider implements SandboxProvider {
   readonly id = 'e2b';
   constructor(
     private readonly apiKey: () => string,
-    private readonly template: () => string = () => process.env.E2B_TEMPLATE ?? '',
+    private readonly template: () => string = () => process.env.E2B_TEMPLATE ?? E2B_DEFAULT_TEMPLATE,
   ) {}
+
+  /** Until this time the workspace template is treated as missing (after a not-found error). */
+  private missingUntil = 0;
 
   needs(): string | null {
     if (!this.apiKey()) return 'E2B_API_KEY';
@@ -128,7 +138,19 @@ export class E2BProvider implements SandboxProvider {
     const mod = (await import(/* @vite-ignore */ SDK)) as { Sandbox: E2BSandboxClass };
     const opts = { apiKey: this.apiKey(), timeoutMs: o.timeoutMs, metadata: o.metadata ?? {}, requestTimeoutMs: 60_000 };
     const tpl = this.template();
-    const sbx = tpl ? await mod.Sandbox.create(tpl, opts) : await mod.Sandbox.create(opts);
+    let sbx: E2BSandbox;
+    if (tpl && Date.now() > this.missingUntil) {
+      try {
+        sbx = await mod.Sandbox.create(tpl, opts);
+      } catch (e) {
+        // The workspace template is missing (not built yet, or deleted): fall back to E2B's default image.
+        if (!/not.?found|404|does not exist|no such template|unknown template/i.test(String((e as Error)?.message ?? e))) throw e;
+        this.missingUntil = Date.now() + 10 * 60_000;
+        sbx = await mod.Sandbox.create(opts);
+      }
+    } else {
+      sbx = await mod.Sandbox.create(opts);
+    }
     const session = new E2BSession(sbx);
     try {
       await sbx.files.makeDir(SANDBOX_WORKDIR);
