@@ -1,0 +1,202 @@
+import { z } from 'zod';
+import { defineTool, type AgentServices, type ToolContext } from './types.js';
+import { SANDBOX_WORKDIR, sandboxPath, shq, type ExecResult, type SandboxSession } from '../sandbox/index.js';
+import { copyToWorkspace, listRemote, SAVE_MAX_FILE, SAVE_PREFIX } from '../sandbox/persist.js';
+import { workspaceDir, writeWsFile } from '../workspace.js';
+
+/**
+ * Tools that work on Orin's own computer (a cloud sandbox, E2B by default). One sandbox per
+ * agent is started on first use and reused, so files and installed packages carry over between
+ * steps. Hidden from the model until a sandbox provider is configured.
+ */
+
+export function sandboxNeeds(svc: AgentServices): string | null {
+  return svc.sandboxes ? svc.sandboxes.needs() : 'a sandbox provider (E2B_API_KEY)';
+}
+
+function withSandbox<T>(ctx: ToolContext, fn: (s: SandboxSession) => Promise<T>): Promise<T> {
+  const m = ctx.services.sandboxes;
+  if (!m) throw new Error('The sandbox is not set up on this server.');
+  return m.use(ctx.owner, fn, { signal: ctx.signal, incognito: ctx.incognito });
+}
+
+const log = (ctx: ToolContext, kind: 'command' | 'code' | 'file' | 'save', text: string, ok = true, ms?: number) => ctx.services.sandboxes?.log(ctx.owner, kind, text, ok, ms === undefined ? {} : { ms });
+
+export function formatExec(r: ExecResult): string {
+  const code = r.exitCode === null ? (r.timedOut ? 'stopped (time limit)' : 'stopped') : String(r.exitCode);
+  return `exit code: ${code}\n\nstdout:\n${r.stdout.slice(-8000) || '(empty)'}\n\nstderr:\n${r.stderr.slice(-4000) || '(empty)'}`;
+}
+
+const short = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s).replace(/\s+/g, ' ');
+
+export const sandboxRunTool = defineTool({
+  name: 'sandbox_run',
+  description:
+    `Run a shell command (bash) on your own Linux computer: a private cloud sandbox with internet, Python 3 (pip), Node.js (npm), git and the usual tools. ` +
+    `The working folder is ${SANDBOX_WORKDIR}; files and installed packages stay there between calls while the sandbox is open (it closes after about 10 quiet minutes, and changed files are then saved to the user's files under ${SAVE_PREFIX}/ and copied back next time). ` +
+    'Use it to install packages, run scripts and tests, build projects (npm run build), or fetch pages with curl. For a server that keeps running (npm run dev, python -m http.server) set background true, then use sandbox_preview for its link. Nothing here touches the user\'s real devices or accounts.',
+  schema: z.object({
+    command: z.string().min(1).max(20_000),
+    cwd: z.string().max(300).optional().describe(`Folder to run in; relative paths are inside ${SANDBOX_WORKDIR}`),
+    timeout_sec: z.number().int().min(5).max(600).optional().describe('Time limit, default 120 s'),
+    background: z.boolean().optional().describe('Start it and return at once (for servers that keep running)'),
+  }),
+  label: (a) => `Running ${short(a.command, 40)}…`,
+  needs: ({ services }) => sandboxNeeds(services),
+  timeoutMs: 660_000,
+  handler: async (a, ctx) => {
+    const cwd = sandboxPath(a.cwd);
+    const t0 = Date.now();
+    if (a.background) {
+      const r = await withSandbox(ctx, (s) => s.execBackground(a.command, { cwd }));
+      log(ctx, 'command', `Started in background: ${short(a.command)}`);
+      return { content: `Started in the background${r.pid ? ` (pid ${r.pid})` : ''}: ${a.command}\nGive it a few seconds, then check it with sandbox_run (e.g. curl -s localhost:PORT) or get a link with sandbox_preview.`, summary: 'Started in background' };
+    }
+    const r = await withSandbox(ctx, (s) => s.exec(a.command, { cwd, timeoutMs: (a.timeout_sec ?? 120) * 1000, signal: ctx.signal }));
+    const ok = r.exitCode === 0;
+    log(ctx, 'command', short(a.command), ok, Date.now() - t0);
+    return {
+      ok,
+      content: formatExec(r),
+      summary: ok ? 'Command ran' : r.exitCode === null ? 'Command stopped' : `Command failed (exit ${r.exitCode})`,
+      display: { kind: 'code', stdout: r.stdout.slice(-4000), stderr: r.stderr.slice(-2000) },
+    };
+  },
+});
+
+export const sandboxWriteFileTool = defineTool({
+  name: 'sandbox_write_file',
+  description: `Create or overwrite a text file on your sandbox computer (folders are created). Relative paths are inside ${SANDBOX_WORKDIR}. Use it for source code, configs and site files you then run or build with sandbox_run.`,
+  schema: z.object({ path: z.string().min(1).max(300), content: z.string().max(1_000_000) }),
+  label: (a) => `Writing ${short(a.path, 40)}…`,
+  needs: ({ services }) => sandboxNeeds(services),
+  handler: async (a, ctx) => {
+    const p = sandboxPath(a.path);
+    await withSandbox(ctx, (s) => s.writeFile(p, a.content));
+    log(ctx, 'file', `Wrote ${p.replace(`${SANDBOX_WORKDIR}/`, '')}`);
+    return { content: `Wrote ${p} (${Buffer.byteLength(a.content)} bytes).`, summary: `Wrote ${p.split('/').pop()}` };
+  },
+});
+
+export const sandboxReadFileTool = defineTool({
+  name: 'sandbox_read_file',
+  description: `Read a text file from your sandbox computer (relative paths are inside ${SANDBOX_WORKDIR}). Long files are cut at 20,000 characters.`,
+  schema: z.object({ path: z.string().min(1).max(300) }),
+  label: (a) => `Reading ${short(a.path, 40)}…`,
+  needs: ({ services }) => sandboxNeeds(services),
+  handler: async (a, ctx) => {
+    const p = sandboxPath(a.path);
+    const data = await withSandbox(ctx, (s) => s.readFile(p));
+    const text = Buffer.from(data).toString('utf8');
+    return { content: text.length > 20_000 ? `${text.slice(0, 20_000)}\n…(cut, ${text.length} characters in total)` : text || '(empty file)', summary: `Read ${p.split('/').pop()}` };
+  },
+});
+
+export const sandboxListFilesTool = defineTool({
+  name: 'sandbox_list_files',
+  description: `List files in a folder of your sandbox computer (default ${SANDBOX_WORKDIR}), with sizes. node_modules, .git and caches are left out.`,
+  schema: z.object({ path: z.string().max(300).optional() }),
+  label: () => 'Listing sandbox files…',
+  needs: ({ services }) => sandboxNeeds(services),
+  handler: async (a, ctx) => {
+    const dir = sandboxPath(a.path);
+    const files = await withSandbox(ctx, (s) => listRemote(s, dir, 300));
+    if (!files.length) return { content: `No files in ${dir}.`, summary: 'No files' };
+    return { content: `${dir}:\n${files.map((f) => `${f.path}  (${f.size} bytes)`).join('\n')}`, summary: `${files.length} file${files.length === 1 ? '' : 's'}` };
+  },
+});
+
+export const sandboxSaveTool = defineTool({
+  name: 'sandbox_save',
+  description:
+    "Copy a file or folder from your sandbox computer into the user's own files on Orin's server, where they stay after the sandbox closes and the user can open them. " +
+    'To publish a site you built in the sandbox: build it, sandbox_save the folder with index.html (e.g. dist) to "sites/<name>", then call publish_site with that folder. ' +
+    'node_modules, .git and caches are skipped; files over 500 KB are skipped; up to 5 MB per save.',
+  schema: z.object({
+    path: z.string().min(1).max(300).describe(`File or folder in the sandbox; relative paths are inside ${SANDBOX_WORKDIR}`),
+    to: z.string().min(1).max(200).describe('Destination folder in the user\'s files, e.g. "sites/portfolio" or "projects/report"'),
+  }),
+  label: (a) => `Saving ${short(a.path, 30)}…`,
+  needs: ({ services }) => sandboxNeeds(services),
+  writes: true,
+  handler: async (a, ctx) => {
+    const p = sandboxPath(a.path);
+    const to = a.to.replace(/^\/+|\/+$/g, '');
+    const rep = await withSandbox(ctx, async (s) => {
+      const kind = await s.exec(`if [ -d ${shq(p)} ]; then echo dir; elif [ -f ${shq(p)} ]; then echo file; else echo none; fi`, { cwd: '/', timeoutMs: 15_000 });
+      const what = kind.stdout.trim();
+      if (what === 'none') throw new Error(`Nothing at ${p} in the sandbox.`);
+      if (what === 'dir') return copyToWorkspace(ctx.services, ctx.owner, s, { from: p, to });
+      const name = p.split('/').pop()!;
+      const data = await s.readFile(p);
+      if (data.byteLength > SAVE_MAX_FILE) return { saved: [], skipped: [`${name} (over ${SAVE_MAX_FILE / 1000} KB)`], bytes: 0 };
+      writeWsFile(workspaceDir(ctx.services, ctx.owner), `${to}/${name}`, Buffer.from(data));
+      return { saved: [name], skipped: [], bytes: data.byteLength };
+    });
+    const ok = rep.saved.length > 0;
+    log(ctx, 'save', ok ? `Saved ${rep.saved.length} file${rep.saved.length === 1 ? '' : 's'} to ${to}/` : `Nothing saved from ${p}`, ok);
+    return {
+      ok,
+      content: ok
+        ? `Saved ${rep.saved.length} file${rep.saved.length === 1 ? '' : 's'} (${rep.bytes} bytes) to the user's files under ${to}/:\n${rep.saved.slice(0, 60).map((f) => `${to}/${f}`).join('\n')}${rep.skipped.length ? `\n\nSkipped: ${rep.skipped.slice(0, 20).join('; ')}` : ''}`
+        : `Nothing was saved from ${p}.${rep.skipped.length ? ` Skipped: ${rep.skipped.slice(0, 20).join('; ')}` : ' The folder is empty.'}`,
+      summary: ok ? `Saved ${rep.saved.length} file${rep.saved.length === 1 ? '' : 's'}` : 'Nothing saved',
+      display: ok ? { kind: 'file', path: `${to}/${rep.saved.length === 1 ? rep.saved[0] : ''}`.replace(/\/$/, ''), size: rep.bytes } : undefined,
+    };
+  },
+});
+
+export const sandboxPreviewTool = defineTool({
+  name: 'sandbox_preview',
+  description:
+    'Get a temporary public https link to a server running on your sandbox computer (start it first with sandbox_run background:true, listening on 0.0.0.0). The link stops working when the sandbox closes, so for a lasting link save the built files with sandbox_save and use publish_site.',
+  schema: z.object({ port: z.number().int().min(1).max(65535) }),
+  label: (a) => `Opening port ${a.port}…`,
+  needs: ({ services }) => sandboxNeeds(services),
+  handler: async (a, ctx) => {
+    const out = await withSandbox(ctx, async (s) => {
+      if (!s.publicUrl) return null;
+      const probe = await s.exec(`curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:${a.port}/ || true`, { cwd: '/', timeoutMs: 15_000 });
+      return { url: s.publicUrl(a.port), code: probe.stdout.trim() };
+    });
+    if (!out) return { ok: false, content: 'This sandbox provider has no public links.', summary: 'No public link' };
+    const up = /^[1-5]\d\d$/.test(out.code) && out.code !== '000';
+    log(ctx, 'command', `Preview link for port ${a.port}${up ? '' : ' (nothing answering yet)'}`, up);
+    return {
+      ok: up,
+      content: up
+        ? `Temporary link (works while the sandbox is open, about 10 quiet minutes): ${out.url}\nThe server answered with HTTP ${out.code}.`
+        : `Nothing is answering on port ${a.port} inside the sandbox yet (curl got ${out.code || 'no answer'}). Start the server with sandbox_run background:true on 0.0.0.0:${a.port}, wait a few seconds, and try again. Do not give the user this link until it answers: ${out.url}`,
+      summary: up ? 'Preview link ready' : 'Server not answering',
+      display: up ? { kind: 'page', url: out.url, title: `Preview on port ${a.port}` } : undefined,
+    };
+  },
+});
+
+export const sandboxCloseTool = defineTool({
+  name: 'sandbox_close',
+  description: `Save changed files (to the user's files under ${SAVE_PREFIX}/) and shut your sandbox computer down now. It also closes by itself after about 10 quiet minutes, so only use this when the user asks or the work is clearly finished.`,
+  schema: z.object({}),
+  label: () => 'Closing the sandbox…',
+  needs: ({ services }) => sandboxNeeds(services),
+  handler: async (_a, ctx) => {
+    const closed = await ctx.services.sandboxes!.close(ctx.owner, 'Orin finished the work');
+    return { content: closed ? `The sandbox is closed; changed files were saved under ${SAVE_PREFIX}/.` : 'No sandbox was open.', summary: closed ? 'Sandbox closed' : 'No sandbox open' };
+  },
+});
+
+export const sandboxTools = [sandboxRunTool, sandboxWriteFileTool, sandboxReadFileTool, sandboxListFilesTool, sandboxSaveTool, sandboxPreviewTool, sandboxCloseTool];
+
+/** run_code on the sandbox: the code is written to a file in the work folder and run there. */
+export async function runCodeInSandbox(ctx: ToolContext, language: 'python' | 'javascript' | 'bash', code: string): Promise<ExecResult> {
+  const ext = language === 'python' ? 'py' : language === 'javascript' ? 'mjs' : 'sh';
+  const file = `${SANDBOX_WORKDIR}/.orin/run.${ext}`;
+  const cmd = language === 'python' ? `python3 ${file}` : language === 'javascript' ? `node ${file}` : `bash ${file}`;
+  const t0 = Date.now();
+  const r = await withSandbox(ctx, async (s) => {
+    await s.writeFile(file, code);
+    return s.exec(cmd, { timeoutMs: 120_000, signal: ctx.signal });
+  });
+  log(ctx, 'code', `Ran ${language} (${code.split('\n').length} line${code.includes('\n') ? 's' : ''})`, r.exitCode === 0, Date.now() - t0);
+  return r;
+}
