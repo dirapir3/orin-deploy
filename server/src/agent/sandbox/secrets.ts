@@ -41,6 +41,10 @@ function ownerKey(owner: string): string {
   return owner.split('#')[0]!;
 }
 
+export function holdSecret(owner: string, name: string, value: string) {
+  remember(owner, name, value);
+}
+
 function remember(owner: string, name: string, value: string) {
   const k = ownerKey(owner);
   const now = Date.now();

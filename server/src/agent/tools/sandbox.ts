@@ -16,21 +16,35 @@ export function sandboxNeeds(svc: AgentServices): string | null {
   return svc.sandboxes ? svc.sandboxes.needs() : 'a sandbox provider (E2B_API_KEY)';
 }
 
-function withSandbox<T>(ctx: ToolContext, fn: (s: SandboxSession) => Promise<T>): Promise<T> {
+export function withSandbox<T>(ctx: ToolContext, fn: (s: SandboxSession) => Promise<T>): Promise<T> {
   const m = ctx.services.sandboxes;
   if (!m) throw new Error('The sandbox is not set up on this server.');
   return m.use(ctx.owner, fn, { signal: ctx.signal, incognito: ctx.incognito });
 }
 
-const log = (ctx: ToolContext, kind: 'command' | 'code' | 'file' | 'save', text: string, ok = true, ms?: number) => ctx.services.sandboxes?.log(ctx.owner, kind, text, ok, ms === undefined ? {} : { ms });
+export const log = (ctx: ToolContext, kind: 'command' | 'code' | 'file' | 'save', text: string, ok = true, ms?: number) => ctx.services.sandboxes?.log(ctx.owner, kind, text, ok, ms === undefined ? {} : { ms });
 
-export function formatExec(r: ExecResult): string {
+export function formatExec(r: ExecResult, fullPath?: string): string {
   const code = r.exitCode === null ? (r.timedOut ? 'stopped (time limit)' : 'stopped') : String(r.exitCode);
-  return `exit code: ${code}\n\nstdout:\n${r.stdout.slice(-8000) || '(empty)'}\n\nstderr:\n${r.stderr.slice(-4000) || '(empty)'}`;
+  const cut = (t: string, n: number) => (t.length <= n ? t : `${t.slice(0, Math.floor(n * 0.3))}\n\u2026[${t.length - n} characters cut here]\u2026\n${t.slice(-Math.ceil(n * 0.7))}`);
+  const note = fullPath ? `\n\nThe output was long: all of it is saved in ${fullPath} on your computer. Read parts with sandbox_run (rg, sed -n, tail) instead of running the command again.` : '';
+  return `exit code: ${code}\n\nstdout:\n${cut(r.stdout, 8000) || '(empty)'}\n\nstderr:\n${cut(r.stderr, 4000) || '(empty)'}${note}`;
+}
+
+/** Saves the whole (already redacted) output of a long command to a file on the computer. */
+export async function keepFullOutput(ctx: ToolContext, r: ExecResult): Promise<string | undefined> {
+  if (r.stdout.length <= 8000 && r.stderr.length <= 4000) return undefined;
+  const path = `/home/user/.orin/out/cmd-${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${Math.random().toString(36).slice(2, 6)}.log`;
+  try {
+    await withSandbox(ctx, (s) => s.writeFile(path, `${r.stdout}${r.stderr ? `\n\n--- stderr ---\n${r.stderr}` : ''}`));
+    return path;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Command output with any vault secret replaced by [secret:NAME]. */
-function hide(owner: string, r: ExecResult): ExecResult {
+export function hide(owner: string, r: ExecResult): ExecResult {
   return { ...r, stdout: redactSecrets(owner, r.stdout), stderr: redactSecrets(owner, r.stderr) };
 }
 
@@ -50,14 +64,16 @@ export function secretFields(refs: SecretRefs): { label: string; value: string }
   return refs?.length ? [{ label: 'Uses from your vault', value: refs.map((r) => `${r.name} as $${r.env}`).join(', ') }] : [];
 }
 
-const short = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s).replace(/\s+/g, ' ');
+export const short = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s).replace(/\s+/g, ' ');
 
 export const sandboxRunTool = defineTool({
   name: 'sandbox_run',
   description:
-    `Run a shell command (bash) on your own Linux computer: a private cloud sandbox with internet, Python 3 (pip), Node.js (npm), git and the usual tools. ` +
-    `The working folder is ${SANDBOX_WORKDIR}; files and installed packages stay there between calls while the sandbox is open (it closes after about 10 quiet minutes, and changed files are then saved to the user's files under ${SAVE_PREFIX}/ and copied back next time). ` +
-    'Use it to install packages, run scripts and tests, build projects (npm run build), or fetch pages with curl. For a server that keeps running (npm run dev, python -m http.server) set background true, then use sandbox_preview for its link. Nothing here touches the user\'s real devices or accounts.',
+    `Run a shell command (bash) on your own Linux computer: a private Ubuntu cloud machine with internet and sudo (no password). ` +
+    'Installed: Python 3 with pip (requests, pandas, numpy, matplotlib, pillow, pypdf, pdfplumber, reportlab, python-docx, openpyxl, python-pptx, playwright), Node.js 22 LTS with npm, yarn, pnpm, npx expo and eas (EAS CLI), TypeScript, git, build-essential, cmake, ' +
+    'Java 17, the Android SDK ($ANDROID_HOME: platforms 36 and 37, build-tools 36 and 37, NDK 27, CMake) with Gradle settings for this machine, orin-android-build (Expo/React Native app to APK), Chromium (use sandbox_browser), LibreOffice (soffice --headless --convert-to pdf), pandoc, ImageMagick, ffmpeg, poppler (pdftotext), qpdf, ghostscript, tesseract, zip/7z, jq, ripgrep, sqlite3. ' +
+    `The working folder is ${SANDBOX_WORKDIR}; files and installed packages stay there while the computer is on (it turns off after about 10 quiet minutes and lives at most about an hour); changed files are then saved to the user's files under ${SAVE_PREFIX}/ and copied back next time, without node_modules and build folders. ` +
+    'Long output is saved whole to a file and the reply names it. For a server that keeps running (npm run dev, npx expo start --web, python -m http.server) set background true, then use sandbox_preview for its link. For anything over a few minutes (Android builds, big installs) use sandbox_job. Edit files with sandbox_edit_file. Nothing here touches the user\'s real devices or accounts.',
   schema: z.object({
     command: z.string().min(1).max(20_000),
     cwd: z.string().max(300).optional().describe(`Folder to run in; relative paths are inside ${SANDBOX_WORKDIR}`),
@@ -92,9 +108,10 @@ export const sandboxRunTool = defineTool({
     const r = hide(ctx.owner, await withSandbox(ctx, (s) => s.exec(a.command, { cwd, timeoutMs: (a.timeout_sec ?? 120) * 1000, signal: ctx.signal, envs })));
     const ok = r.exitCode === 0;
     log(ctx, 'command', `${short(a.command)}${names.length ? ` (with ${names.join(', ')} from your vault)` : ''}`, ok, Date.now() - t0);
+    const full = await keepFullOutput(ctx, r);
     return {
       ok,
-      content: formatExec(r),
+      content: formatExec(r, full),
       summary: ok ? 'Command ran' : r.exitCode === null ? 'Command stopped' : `Command failed (exit ${r.exitCode})`,
       display: { kind: 'code', stdout: r.stdout.slice(-4000), stderr: r.stderr.slice(-2000) },
     };
@@ -148,7 +165,8 @@ export const sandboxSaveTool = defineTool({
   description:
     "Copy a file or folder from your sandbox computer into the user's own files on Orin's server, where they stay after the sandbox closes and the user can open them. " +
     'To publish a site you built in the sandbox: build it, sandbox_save the folder with index.html (e.g. dist) to "sites/<name>", then call publish_site with that folder. ' +
-    'node_modules, .git and caches are skipped; files over 500 KB are skipped; up to 5 MB per save.',
+    'To send the user a file you made (a PDF, an image, a document, an APK), save that one file: a file card appears in the chat that they tap to open or download. ' +
+    'For folders, node_modules, .git, build folders and caches are skipped, and files over 2 MB; up to 20 MB per folder save. A single file can be up to 60 MB (files over 20 MB are lost if the server restarts).',
   schema: z.object({
     path: z.string().min(1).max(300).describe(`File or folder in the sandbox; relative paths are inside ${SANDBOX_WORKDIR}`),
     to: z.string().min(1).max(200).describe('Destination folder in the user\'s files, e.g. "sites/portfolio" or "projects/report"'),
@@ -166,7 +184,7 @@ export const sandboxSaveTool = defineTool({
       if (what === 'dir') return copyToWorkspace(ctx.services, ctx.owner, s, { from: p, to });
       const name = p.split('/').pop()!;
       const data = await s.readFile(p);
-      if (data.byteLength > SAVE_MAX_FILE) return { saved: [], skipped: [`${name} (over ${SAVE_MAX_FILE / 1000} KB)`], bytes: 0 };
+      if (data.byteLength > SINGLE_MAX_FILE) return { saved: [], skipped: [`${name} (over ${SINGLE_MAX_FILE / 1_000_000} MB)`], bytes: 0 };
       writeWsFile(workspaceDir(ctx.services, ctx.owner), `${to}/${name}`, Buffer.from(data));
       return { saved: [name], skipped: [], bytes: data.byteLength };
     });
@@ -221,6 +239,9 @@ export const sandboxCloseTool = defineTool({
     return { content: closed ? `The sandbox is closed; changed files were saved under ${SAVE_PREFIX}/.` : 'No sandbox was open.', summary: closed ? 'Sandbox closed' : 'No sandbox open' };
   },
 });
+
+/** One file the user is sent with sandbox_save (an APK is ~25 MB). */
+const SINGLE_MAX_FILE = 60_000_000;
 
 export const sandboxTools = [sandboxRunTool, sandboxWriteFileTool, sandboxReadFileTool, sandboxListFilesTool, sandboxSaveTool, sandboxPreviewTool, sandboxCloseTool];
 

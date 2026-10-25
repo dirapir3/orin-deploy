@@ -20,6 +20,7 @@ import { createTaskTool, deepResearchTool, taskStatusTool, saveSkillTool, runSki
 import { runCodeTool, browseTool } from './adapters.js';
 import { connectorTools } from '../connectors.js';
 import { sandboxTools } from './sandbox.js';
+import { sandboxBrowserTool, sandboxEditFileTool, sandboxJobTool, sandboxLiveViewTool } from './computer.js';
 
 export const ALL_TOOLS: ToolDef[] = [
   webSearchTool,
@@ -51,6 +52,10 @@ export const ALL_TOOLS: ToolDef[] = [
   ...extraTools,
   ...connectorTools,
   ...sandboxTools,
+  sandboxEditFileTool,
+  sandboxJobTool,
+  sandboxBrowserTool,
+  sandboxLiveViewTool,
 ];
 
 export function buildToolRegistry(extra: ToolDef[] = []): ToolRegistry {

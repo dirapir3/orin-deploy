@@ -35,6 +35,8 @@ interface Entry {
   extendedAt: number;
   busy: number;
   noSave: boolean;
+  /** a background job (sandbox_job) may still be running until about this time */
+  jobUntil?: number;
   closing?: Promise<void>;
 }
 
@@ -69,7 +71,8 @@ export class SandboxManager {
 
   constructor(private readonly o: SandboxManagerOptions) {
     this.idleMs = o.idleMs ?? 10 * 60_000;
-    this.maxLifeMs = o.maxLifeMs ?? 45 * 60_000;
+    // E2B's free plan ends every sandbox after one hour, so the default stays just under that.
+    this.maxLifeMs = o.maxLifeMs ?? (Number(process.env.E2B_MAX_LIFE_MIN) || 55) * 60_000;
     this.maxSessions = o.maxSessions ?? 4;
     this.now = o.now ?? Date.now;
     const sweepMs = o.sweepMs ?? 30_000;
@@ -215,12 +218,43 @@ export class SandboxManager {
     return true;
   }
 
+  /** Time left before the owner's sandbox reaches its hard lifetime (null when none is open). */
+  remainingMs(owner: string): number | null {
+    const e = this.sessions.get(owner);
+    if (!e || e.closing) return null;
+    return e.startedAt + this.maxLifeMs - this.now();
+  }
+
+  /** Marks that a background job was started: the idle sweep keeps the sandbox while it runs. */
+  markJob(owner: string, maxMs = this.maxLifeMs): void {
+    const e = this.sessions.get(owner);
+    if (e) e.jobUntil = Math.max(e.jobUntil ?? 0, this.now() + maxMs);
+  }
+
+  /** True while a sandbox_job is still running (its .exit file is not written yet). */
+  private async jobRunning(e: Entry): Promise<boolean> {
+    try {
+      const r = await e.session.exec('for f in $HOME/.orin/jobs/*.pid; do [ -e "$f" ] || continue; [ -e "${f%.pid}.exit" ] || { echo running; break; }; done', { cwd: '/', timeoutMs: 20_000 });
+      return r.stdout.includes('running');
+    } catch {
+      return false;
+    }
+  }
+
   /** Closes sandboxes that have been quiet for idleMs or alive for maxLifeMs (never one mid-command). */
   async sweep(): Promise<string[]> {
     const now = this.now();
     const closed: string[] = [];
     for (const e of [...this.sessions.values()]) {
       if (e.closing || e.busy > 0) continue;
+      if (now - e.lastUsedAt >= this.idleMs && e.jobUntil && now < e.jobUntil && now - e.startedAt < this.maxLifeMs) {
+        // A long build or job is still running in the background: keep the computer on.
+        if (await this.jobRunning(e)) {
+          await this.keepAlive(e);
+          continue;
+        }
+        e.jobUntil = undefined;
+      }
       if (now - e.lastUsedAt >= this.idleMs) {
         closed.push(e.owner);
         await this.close(e.owner, 'it was not used for a while');

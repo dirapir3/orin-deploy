@@ -10,10 +10,10 @@ import { SANDBOX_WORKDIR, type SandboxEventKind, type SandboxSession } from './t
  */
 
 export const SAVE_PREFIX = 'sandbox';
-export const SAVE_MAX_FILE = 500_000;
-export const SAVE_MAX_TOTAL = 5_000_000;
-export const SAVE_MAX_FILES = 200;
-const SKIP_DIRS = ['node_modules', '.git', '__pycache__', '.venv', 'venv', '.cache', '.next', '.npm', '.ipynb_checkpoints', '.orin'];
+export const SAVE_MAX_FILE = 2_000_000;
+export const SAVE_MAX_TOTAL = 20_000_000;
+export const SAVE_MAX_FILES = 600;
+const SKIP_DIRS = ['node_modules', '.git', '__pycache__', '.venv', 'venv', '.cache', '.next', '.npm', '.ipynb_checkpoints', '.orin', 'build', '.gradle', '.expo', '.cxx', '.kotlin', 'Pods'];
 
 type Log = (kind: SandboxEventKind, text: string, ok?: boolean) => void;
 

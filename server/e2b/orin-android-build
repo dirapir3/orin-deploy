@@ -1,0 +1,43 @@
+#!/bin/bash
+# orin-android-build [project-dir] [--debug]
+# Builds an Expo / React Native app into an Android APK on Orin's computer (2 CPUs, about 4 GB RAM).
+# Installs packages if needed, runs `expo prebuild` when there is no android/ folder, adds a swap file
+# when it can, then runs Gradle with one worker and no daemon. Prints the APK path at the end.
+# Release builds are signed with the debug key (fine for installing on a phone, not for the Play Store).
+set -o pipefail
+. /etc/profile.d/00-orin-env.sh 2>/dev/null
+DIR=.; VARIANT=Release
+for a in "$@"; do case "$a" in --debug) VARIANT=Debug ;; -h|--help) sed -n 2,6p "$0"; exit 0 ;; *) DIR="$a" ;; esac; done
+cd "$DIR" || { echo "No such folder: $DIR"; exit 1; }
+[ -f package.json ] || { echo "No package.json in $(pwd)"; exit 1; }
+export CI=1 NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1536}"
+
+if ! swapon --show 2>/dev/null | grep -q .; then
+  if sudo -n true 2>/dev/null && [ "$(df --output=avail -k / | tail -1)" -gt 8000000 ]; then
+    (sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none) \
+      && sudo chmod 600 /swapfile && sudo mkswap /swapfile >/dev/null 2>&1 && sudo swapon /swapfile 2>/dev/null \
+      && echo "Added 2 GB swap" || { sudo rm -f /swapfile; echo "No swap (not allowed here); continuing"; }
+  fi
+fi
+
+if [ ! -d node_modules ]; then
+  echo "== Installing packages"
+  if [ -f pnpm-lock.yaml ]; then pnpm install; elif [ -f yarn.lock ]; then yarn install --frozen-lockfile || yarn install; else npm install --no-audit --no-fund; fi || exit 1
+fi
+if [ ! -d android ]; then
+  echo "== expo prebuild (android)"
+  npx expo prebuild -p android --no-install || exit 1
+fi
+cd android || exit 1
+chmod +x gradlew
+echo "== Gradle assemble$VARIANT (one worker, arm64 only; first build takes 10-20 minutes)"
+SECONDS=0
+./gradlew "assemble$VARIANT" --no-daemon --max-workers=1 -PreactNativeArchitectures=arm64-v8a --console=plain 2>&1 | tee /tmp/orin-gradle.log | grep -E --line-buffered '^> Task|BUILD|FAILURE|error:|What went wrong' | grep -v --line-buffered -E 'UP-TO-DATE|NO-SOURCE|SKIPPED'
+rc=${PIPESTATUS[0]}
+v=$(echo "$VARIANT" | tr A-Z a-z)
+apk=$(ls -1 app/build/outputs/apk/$v/*.apk 2>/dev/null | head -1)
+if [ "$rc" = 0 ] && [ -n "$apk" ]; then
+  echo "BUILD OK in ${SECONDS}s"; echo "APK: $(readlink -f "$apk") ($(du -h "$apk" | cut -f1))"
+else
+  echo "BUILD FAILED (exit $rc) after ${SECONDS}s. Last lines of /tmp/orin-gradle.log:"; tail -40 /tmp/orin-gradle.log; exit 1
+fi
