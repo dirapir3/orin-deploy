@@ -1,0 +1,13 @@
+rules_version = '2';
+// Orin durable storage. Only the Orin server's own Firebase Auth account can read or write.
+// The app never talks to Firestore directly; every user request goes through the server,
+// which checks who is asking. Stored data is also encrypted by the server.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if request.auth != null
+        && request.auth.token.email == 'orin-server@example.com'
+        && request.auth.token.firebase.sign_in_provider == 'password';
+    }
+  }
+}

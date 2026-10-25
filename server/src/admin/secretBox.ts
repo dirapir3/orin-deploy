@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -24,6 +24,10 @@ function masterKey(): Buffer {
     cached = Buffer.from(fromEnv, 'base64url');
   } else if (existsSync(keyFile)) {
     cached = Buffer.from(readFileSync(keyFile, 'utf8').trim(), 'base64url');
+  } else if ((process.env.VAULT_KEY ?? '').trim()) {
+    // Hosts with a wiped disk (Render free plan): derive a stable key from VAULT_KEY, which lives
+    // in the host's environment, so keys saved on the admin page still open after a restart.
+    cached = createHash('sha256').update(`orin-master-key:${process.env.VAULT_KEY!.trim()}`).digest();
   } else {
     cached = randomBytes(32);
     try {

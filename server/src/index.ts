@@ -8,9 +8,15 @@ import { SECTIONS } from './admin/fields.js';
 import { isSealed, seal, setMasterKeyFile } from './admin/secretBox.js';
 import { loadConfig } from './config.js';
 import { logger } from './logger.js';
+import { startDurable } from './durable/index.js';
+import { setDurable } from './durable/state.js';
 import { createSupabaseVerifier } from './middleware/auth.js';
 import { createAccountService, createSupabaseAdmin } from './services/supabaseAdmin.js';
 import { LogUsageSink, SupabaseUsageSink } from './services/usage.js';
+
+// Durable storage: bring back the saved data folder from Firestore before anything reads it.
+const durable = await startDurable(resolve(process.env.DATA_DIR || './data'), (l, m) => logger[l](m));
+setDurable(durable);
 
 // Admin key page: make sure it has a password (generated + saved to .env on first start).
 const envFile = resolve(process.env.ADMIN_ENV_FILE || '.env');
@@ -93,6 +99,7 @@ const onListen = () => {
   }
 };
 const server = bindHost ? app.listen(config.port, bindHost, onListen) : app.listen(config.port, onListen);
+void durable?.start();
 
 // Long-lived SSE responses: keep sockets open long enough for slow generations.
 server.requestTimeout = 0;
@@ -100,11 +107,14 @@ server.headersTimeout = 65_000;
 
 const shutdown = (signal: string) => {
   logger.info('shutting down', { signal });
-  void agent.stop().finally(() => {
+  void agent.stop().finally(async () => {
     agent.store.close();
+    // Save the last changes before the host wipes the disk.
+    if (durable) await durable.flush(18_000).catch(() => undefined);
     server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2_000).unref();
   });
-  setTimeout(() => process.exit(1), 10_000).unref();
+  setTimeout(() => process.exit(1), durable ? 27_000 : 10_000).unref();
 };
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));

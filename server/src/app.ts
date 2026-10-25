@@ -1,3 +1,4 @@
+import { durableHealth } from './durable/state.js';
 import { agentExtraRouter } from './routes/agentExtra.js';
 import { webAppRouter } from './webApp.js';
 import { verifyToken } from './agent/vault.js';
@@ -98,6 +99,7 @@ export function createApp(deps: Deps) {
     res.json({
       ok: true,
       version: API_VERSION,
+      storage: durableHealth(),
       ai: {
         configured: real,
         demo: Boolean(providers.chat?.isDemo),
