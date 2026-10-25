@@ -93,7 +93,14 @@ export interface VaultRow {
   createdAt: number;
   updatedAt: number;
 }
-export type PromptKind = 'approval' | 'question';
+export type PromptKind = 'approval' | 'question' | 'secret' | 'step';
+/** extra card details kept with a prompt (JSON column meta) */
+export interface PromptMeta {
+  headline?: string;
+  content?: string;
+  url?: string;
+  secret?: { name: string; domain: string; what: 'login' | 'password' | 'api_key' };
+}
 export type PromptStatus = 'pending' | 'answered' | 'expired' | 'cancelled';
 export interface PromptRec {
   id: string;
@@ -103,6 +110,10 @@ export interface PromptRec {
   body: string;
   fields: { label: string; value: string }[];
   choices: string[];
+  headline: string | null;
+  content: string | null;
+  url: string | null;
+  secret: PromptMeta['secret'] | null;
   taskId: string | null;
   tool: string | null;
   status: PromptStatus;
@@ -173,7 +184,9 @@ function parseJson<T>(v: unknown, fallback: T): T {
 const toMemory = (r: Row): Memory => ({ id: s(r.id), owner: s(r.owner), text: s(r.text), tags: s(r.tags), createdAt: n(r.created_at), updatedAt: n(r.updated_at) });
 const toNote = (r: Row): Note => ({ id: s(r.id), owner: s(r.owner), title: s(r.title), body: s(r.body), source: s(r.source), createdAt: n(r.created_at), updatedAt: n(r.updated_at) });
 const toVault = (r: Row): VaultRow => ({ id: s(r.id), owner: s(r.owner), name: s(r.name), domain: s(r.domain), usernameEnc: s(r.username_enc), passwordEnc: s(r.password_enc), notesEnc: s(r.notes_enc), createdAt: n(r.created_at), updatedAt: n(r.updated_at) });
-const toPrompt = (r: Row): PromptRec => ({
+const toPrompt = (r: Row): PromptRec => {
+  const meta = parseJson<PromptMeta>(r.meta ?? '{}', {});
+  return {
   id: s(r.id),
   owner: s(r.owner),
   kind: s(r.kind) as PromptKind,
@@ -181,6 +194,10 @@ const toPrompt = (r: Row): PromptRec => ({
   body: s(r.body),
   fields: parseJson(r.fields, []),
   choices: parseJson(r.choices, []),
+  headline: meta.headline ?? null,
+  content: meta.content ?? null,
+  url: meta.url ?? null,
+  secret: meta.secret ?? null,
   taskId: sn(r.task_id),
   tool: sn(r.tool),
   status: s(r.status) as PromptStatus,
@@ -189,7 +206,8 @@ const toPrompt = (r: Row): PromptRec => ({
   createdAt: n(r.created_at),
   answeredAt: nn(r.answered_at),
   expiresAt: n(r.expires_at),
-});
+  };
+};
 const toReminder = (r: Row): Reminder => ({ id: s(r.id), owner: s(r.owner), text: s(r.text), dueAt: n(r.due_at), status: s(r.status) as Reminder['status'], createdAt: n(r.created_at) });
 const toTask = (r: Row): Task => ({
   id: s(r.id),
@@ -233,6 +251,9 @@ export class AgentStore {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000;');
     this.db.exec(SCHEMA);
+    // added after the first release: card details for prompts (headline, full content, page link, secret field)
+    const cols = this.all('PRAGMA table_info(prompts)').map((c) => s(c.name));
+    if (!cols.includes('meta')) this.db.exec("ALTER TABLE prompts ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'");
   }
 
   private all(sql: string, ...params: (string | number | null)[]): Row[] {
@@ -582,11 +603,17 @@ export class AgentStore {
   }
 
   // ---- prompts (approvals and questions the agent asks the user)
-  createPrompt(owner: string, v: { kind: PromptKind; title: string; body: string; fields?: { label: string; value: string }[]; choices?: string[]; taskId?: string | null; tool?: string | null; expiresAt: number }): PromptRec {
+  createPrompt(owner: string, v: { kind: PromptKind; title: string; body: string; fields?: { label: string; value: string }[]; choices?: string[]; taskId?: string | null; tool?: string | null; expiresAt: number } & PromptMeta): PromptRec {
     const id = randomUUID();
+    const meta: PromptMeta = {
+      ...(v.headline ? { headline: v.headline.slice(0, 300) } : {}),
+      ...(v.content ? { content: v.content.slice(0, 30_000) } : {}),
+      ...(v.url ? { url: v.url.slice(0, 2000) } : {}),
+      ...(v.secret ? { secret: v.secret } : {}),
+    };
     this.run(
-      'INSERT INTO prompts (id, owner, kind, title, body, fields, choices, task_id, tool, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      id, owner, v.kind, v.title.slice(0, 200), v.body.slice(0, 4000), JSON.stringify(v.fields ?? []), JSON.stringify(v.choices ?? []), v.taskId ?? null, v.tool ?? null, 'pending', Date.now(), v.expiresAt,
+      'INSERT INTO prompts (id, owner, kind, title, body, fields, choices, task_id, tool, status, created_at, expires_at, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      id, owner, v.kind, v.title.slice(0, 200), v.body.slice(0, 4000), JSON.stringify((v.fields ?? []).map((f) => ({ label: f.label.slice(0, 80), value: f.value.slice(0, 2000) }))), JSON.stringify(v.choices ?? []), v.taskId ?? null, v.tool ?? null, 'pending', Date.now(), v.expiresAt, JSON.stringify(meta),
     );
     return this.getPromptById(id)!;
   }

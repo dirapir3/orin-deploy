@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { assertPublicUrl, htmlToText, stripTags, decodeEntities, USER_AGENT } from './net.js';
 import { defineTool, type ToolContext } from './tools/types.js';
 import { domainMatches, revealLogin } from './vault.js';
+import { isRiskyControl } from './risk.js';
 
 /**
  * A lightweight web browser for the agent that works on small hosts without Chromium: it keeps
@@ -204,6 +205,11 @@ export const browserClickTool = defineTool({
   description: 'Follow a numbered link from the last page opened with browser_open.',
   schema: z.object({ link: z.number().int().min(1) }),
   label: () => 'Following a link…',
+  approval: (a, ctx) => {
+    const l = session(ctx.owner).links[a.link - 1];
+    if (!l || !isRiskyControl(`${l.text} ${decodeURIComponent(new URL(l.url).pathname)}`)) return null;
+    return { title: `Press "${l.text.slice(0, 60) || 'link'}"`, headline: l.url, body: `Orin wants to follow this link on ${new URL(l.url).hostname}. It may send, confirm, buy or delete something.`, fields: [{ label: 'Page', value: session(ctx.owner).url }, { label: 'Link', value: l.text || l.url }] };
+  },
   handler: async (a, ctx) => {
     const l = session(ctx.owner).links[a.link - 1];
     if (!l) return { ok: false, content: 'No link with that number on the current page. Open a page first.', summary: 'No such link' };
@@ -261,7 +267,7 @@ export const browserSubmitTool = defineTool({
         .filter(([k]) => !p.form.fields.find((f) => f.name === k && f.type === 'hidden'))
         .map(([k, v]) => ({ label: k, value: k === pf || p.form.fields.find((f) => f.name === k)?.type === 'password' ? '••••••••' : v.slice(0, 200) })),
     ];
-    return { title: p.loginInfo ? `Sign in to ${new URL(p.form.action).hostname}` : `Submit a form on ${new URL(p.form.action).hostname}`, body: p.loginInfo ? 'Orin wants to sign in with your saved login. The password stays hidden.' : 'Orin wants to send this form.', fields };
+    return { title: p.loginInfo ? `Sign in to ${new URL(p.form.action).hostname}` : `Submit a form on ${new URL(p.form.action).hostname}`, headline: p.page, body: p.loginInfo ? 'Orin wants to sign in with your saved login. The password stays hidden.' : 'Orin wants to send this form.', fields };
   },
   handler: async (a, ctx) => {
     const p = plan(a, ctx);

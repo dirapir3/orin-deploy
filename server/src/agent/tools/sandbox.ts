@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { commandRisk } from '../risk.js';
 import { defineTool, type AgentServices, type ToolContext } from './types.js';
 import { SANDBOX_WORKDIR, sandboxPath, shq, type ExecResult, type SandboxSession } from '../sandbox/index.js';
 import { copyToWorkspace, listRemote, SAVE_MAX_FILE, SAVE_PREFIX } from '../sandbox/persist.js';
@@ -44,6 +45,12 @@ export const sandboxRunTool = defineTool({
   label: (a) => `Running ${short(a.command, 40)}…`,
   needs: ({ services }) => sandboxNeeds(services),
   timeoutMs: 660_000,
+  approval: (a) => {
+    const why = commandRisk(a.command);
+    return why
+      ? { title: 'Run a command that reaches outside', headline: short(a.command, 120), body: `Orin wants to run this on her computer. It ${why}.`, content: a.command, fields: [{ label: 'Runs in', value: sandboxPath(a.cwd) }] }
+      : null;
+  },
   handler: async (a, ctx) => {
     const cwd = sandboxPath(a.cwd);
     const t0 = Date.now();

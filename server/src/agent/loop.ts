@@ -67,7 +67,7 @@ export async function executeTool(tool: ToolDef | undefined, call: ToolCall, ctx
     if (!ctx.ask) {
       return { ok: false, content: `Error: ${call.name} needs the user's approval, but nobody can answer right now. Do not retry; tell the user what you would do and ask them to confirm in chat.`, summary: 'Needs approval' };
     }
-    const r = await ctx.ask({ kind: 'approval', title: card.title, body: card.body, fields: card.fields, tool: call.name });
+    const r = await ctx.ask({ kind: 'approval', title: card.title, body: card.body, headline: card.headline, content: card.content, fields: card.fields, tool: call.name });
     if (r.decision === 'change') {
       return { ok: false, content: `The user did not approve yet and asked for changes: "${r.answer ?? ''}". Apply the changes and call ${call.name} again (they will be asked again).`, summary: 'Changes requested' };
     }

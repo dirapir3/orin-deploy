@@ -185,7 +185,7 @@ export class AgentRuntime {
    * so the phone notifies the user.
    */
   ask(owner: string, input: AskInput, o: { signal: AbortSignal; timeoutMs: number; taskId?: string; onCreated?: (p: PromptRec) => void }): Promise<AskResult> {
-    const p = this.store.createPrompt(owner, { kind: input.kind, title: input.title, body: input.body, fields: input.fields, choices: input.choices, taskId: o.taskId ?? null, tool: input.tool ?? null, expiresAt: Date.now() + o.timeoutMs });
+    const p = this.store.createPrompt(owner, { kind: input.kind, title: input.title, body: input.body, headline: input.headline, content: input.content, url: input.url, secret: input.secret, fields: input.fields, choices: input.choices, taskId: o.taskId ?? null, tool: input.tool ?? null, expiresAt: Date.now() + o.timeoutMs });
     if (o.taskId) {
       this.store.addTaskEvent(o.taskId, 'waiting', `Waiting for you: ${input.title}`);
       this.store.addInbox(owner, input.kind === 'approval' ? 'approval' : 'question', input.kind === 'approval' ? `Approve? ${input.title}` : input.title, input.body, p.id);
@@ -199,7 +199,7 @@ export class AgentRuntime {
         clearTimeout(timer);
         o.signal.removeEventListener('abort', onAbort);
         this.waiters.delete(p.id);
-        if (o.taskId) this.store.addTaskEvent(o.taskId, 'answered', r.decision === 'answer' ? `You answered: ${r.answer ?? ''}`.slice(0, 200) : `You chose: ${r.decision}`);
+        if (o.taskId) this.store.addTaskEvent(o.taskId, 'answered', r.decision === 'answer' ? `You answered: ${r.answer ?? ''}`.slice(0, 200) : r.decision === 'done' ? 'You did the step' : `You chose: ${r.decision}`);
         resolve(r);
       };
       const timer = setTimeout(() => {
@@ -218,7 +218,7 @@ export class AgentRuntime {
   }
 
   /** The user's answer from the app. Returns the updated prompt, or null when it is not pending. */
-  answerPrompt(owner: string, id: string, decision: 'approve' | 'deny' | 'change' | 'answer', text?: string): PromptRec | null {
+  answerPrompt(owner: string, id: string, decision: 'approve' | 'deny' | 'change' | 'answer' | 'done', text?: string): PromptRec | null {
     const p = this.store.getPrompt(owner, id);
     if (!p || p.status !== 'pending') return null;
     const answer = text?.trim() || (decision === 'answer' ? '' : null);

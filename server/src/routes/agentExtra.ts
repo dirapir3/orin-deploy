@@ -42,7 +42,12 @@ const VaultPatch = z.object({
   password: z.string().max(500).optional(),
   notes: z.string().max(2000).optional(),
 });
-const AnswerBody = z.object({ decision: z.enum(['approve', 'deny', 'change', 'answer']), text: z.string().max(4000).optional() });
+const AnswerBody = z.object({
+  decision: z.enum(['approve', 'deny', 'change', 'answer', 'done']),
+  text: z.string().max(4000).optional(),
+  // a secure field: goes straight to the Secure Vault, never into the prompt record or to the model
+  secret: z.object({ username: z.string().max(300).optional(), value: z.string().min(1).max(4000) }).optional(),
+});
 const FileBody = z.object({ path: z.string().min(1).max(200), content: z.string().max(1_000_000) });
 
 /** Placeholder catalogue for apps that are not wired up yet, so the Apps page is honest about them. */
@@ -139,8 +144,32 @@ export function agentExtraRouter(deps: Deps): Router {
   });
   r.post('/agent/prompts/:id', (req, res) => {
     const b = parseBody(AnswerBody, req.body);
-    if (b.decision === 'answer' && !b.text?.trim()) throw new AppError('validation_error', 'Type an answer first.');
-    const p = agent.answerPrompt(owner(req), idParam(req), b.decision, b.text);
+    const o = owner(req);
+    const waiting = st.getPrompt(o, idParam(req));
+    if (!waiting || waiting.status !== 'pending') throw new AppError('not_found', 'This request is no longer waiting for an answer.');
+    const allowed: Record<string, string[]> = {
+      approval: ['approve', 'deny', 'change'],
+      question: ['answer', 'deny'],
+      secret: ['answer', 'deny'],
+      step: ['done', 'deny'],
+    };
+    if (!(allowed[waiting.kind] ?? []).includes(b.decision)) throw new AppError('validation_error', 'That answer does not fit this request.');
+    let text = b.text;
+    if (waiting.kind === 'secret' && b.decision === 'answer') {
+      const spec = waiting.secret;
+      const value = b.secret?.value.trim();
+      if (!spec || !value) throw new AppError('validation_error', 'Type it into the secure field first.');
+      const acc = account(req);
+      const existing = st.findVault(acc, spec.name);
+      const username = b.secret?.username?.trim();
+      if (existing) updateLogin(st, acc, existing.id, { domain: spec.domain, password: value, ...(username !== undefined && spec.what === 'login' ? { username } : {}) });
+      else {
+        if (st.listVault(acc).length >= 100) throw new AppError('validation_error', 'The vault holds up to 100 logins.');
+        saveLogin(st, acc, { name: spec.name, domain: spec.domain, username: spec.what === 'login' ? (username ?? '') : '', password: value, notes: spec.what === 'api_key' ? 'API key' : undefined });
+      }
+      text = `Saved to your Secure Vault as "${spec.name}"`;
+    } else if (b.decision === 'answer' && !text?.trim()) throw new AppError('validation_error', 'Type an answer first.');
+    const p = agent.answerPrompt(o, idParam(req), b.decision, text);
     if (!p) throw new AppError('not_found', 'This request is no longer waiting for an answer.');
     res.json({ prompt: p });
   });

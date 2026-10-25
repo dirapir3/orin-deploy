@@ -23,6 +23,59 @@ export const askUserTool = defineTool({
   },
 });
 
+/** Asks for a password, login or API key in a secure field; the value goes to the Secure Vault, never to the model. */
+export const askSecretTool = defineTool({
+  name: 'ask_secret',
+  description:
+    "Ask the user for a password, a login (username + password) or an API key/token through a secure field in the app. What they type goes straight into their Secure Vault under the name you give; you never see it. Then use it by name (browser_submit login). Never ask for passwords or keys in chat text; use this instead.",
+  schema: z.object({
+    name: z.string().trim().min(1).max(80).describe('Vault login name to save it under, e.g. "GitHub" or "OpenWeather key"'),
+    site: z.string().trim().min(3).max(200).describe('Domain it belongs to, e.g. github.com'),
+    what: z.enum(['login', 'password', 'api_key']).describe('login = username and password; password = password only; api_key = a key or token'),
+    reason: z.string().max(300).optional().describe('One sentence on why it is needed'),
+  }),
+  label: () => 'Asking you for a login…',
+  timeoutMs: 31 * 60_000,
+  handler: async (a, ctx) => {
+    if (!ctx.ask) return { ok: false, content: 'Nobody can answer right now. Tell the user to add it in the app (Settings > Secure Vault) and stop.', summary: 'No one to ask' };
+    const domain = a.site.replace(/^https?:\/\//i, '').split('/')[0]!.toLowerCase();
+    const label = a.what === 'api_key' ? 'API key' : a.what === 'login' ? 'login' : 'password';
+    const r = await ctx.ask({
+      kind: 'secret',
+      title: `Your ${label} for ${domain}`,
+      headline: a.name,
+      body: a.reason?.trim() || `Orin needs your ${label} for ${domain}.`,
+      secret: { name: a.name, domain, what: a.what },
+      tool: 'ask_secret',
+    });
+    if (r.decision !== 'answer') return { ok: false, content: `The user did not give it (${r.decision}). Do not ask again unless they bring it up.`, summary: 'Not given' };
+    return {
+      content: `Saved in the user's Secure Vault as "${a.name}" for ${domain}. You cannot see the value. To sign in, use browser_submit with login "${a.name}".`,
+      summary: `Saved to your vault as ${a.name}`.slice(0, 80),
+    };
+  },
+});
+
+/** Hands a step to the user (a code, a captcha, a payment, a sign-in on a page) and waits until they say it is done. */
+export const askUserStepTool = defineTool({
+  name: 'ask_user_step',
+  description:
+    'Ask the user to do one step themselves that you cannot do (enter a code, pass a captcha, enter a payment card, sign in with 2-step verification, approve something on their phone), optionally on a page they open from the card. Waits until they tap Done or say they cannot.',
+  schema: z.object({
+    step: z.string().min(3).max(300).describe('What the user does, as one short instruction'),
+    url: z.string().url().max(2000).optional().describe('The page they open to do it'),
+    details: z.string().max(1500).optional().describe('Anything that helps them do it'),
+  }),
+  label: () => 'Waiting for you…',
+  timeoutMs: 31 * 60_000,
+  handler: async (a, ctx) => {
+    if (!ctx.ask) return { ok: false, content: 'Nobody can do the step right now. Tell the user what is needed and stop.', summary: 'No one to ask' };
+    const r = await ctx.ask({ kind: 'step', title: a.step, body: a.details ?? '', url: a.url, headline: a.url ? new URL(a.url).hostname : undefined, tool: 'ask_user_step' });
+    if (r.decision === 'done') return { content: `The user says the step is done${r.answer ? `: "${r.answer}"` : ''}. Check the result before you go on.`, summary: 'You did the step' };
+    return { ok: false, content: `The user could not do the step (${r.decision}${r.answer ? `: "${r.answer}"` : ''}). Do not retry; say what is still needed.`, summary: 'Step not done' };
+  },
+});
+
 export const vaultListTool = defineTool({
   name: 'vault_list',
   description: "List the logins saved in the user's Secure Vault (name, site and username only; passwords are never shown). Use a login with browser_submit's login argument.",
@@ -353,4 +406,4 @@ export const previewSiteTool = defineTool({
   },
 });
 
-export const extraTools = [askUserTool, vaultListTool, deleteNoteTool, listSchedulesTool, updateScheduleTool, writeFileTool, readFileTool, listFilesTool, deleteFileTool, publishSiteTool, checkSiteTool, unpublishSiteTool, listSitesTool, openSiteTool, previewSiteTool];
+export const extraTools = [askUserTool, askSecretTool, askUserStepTool, vaultListTool, deleteNoteTool, listSchedulesTool, updateScheduleTool, writeFileTool, readFileTool, listFilesTool, deleteFileTool, publishSiteTool, checkSiteTool, unpublishSiteTool, listSitesTool, openSiteTool, previewSiteTool];

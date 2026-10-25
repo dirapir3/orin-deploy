@@ -178,8 +178,10 @@ export const gmailSendTool = defineTool({
   needs: googleNeeds,
   approval: (a) => ({
     title: 'Send email',
-    body: a.body,
-    fields: [{ label: 'To', value: a.to }, ...(a.cc ? [{ label: 'Cc', value: a.cc }] : []), { label: 'Subject', value: a.subject }],
+    headline: a.subject || '(no subject)',
+    body: 'Orin wants to send this email from your Gmail.',
+    content: a.body,
+    fields: [{ label: 'To', value: a.to }, ...(a.cc ? [{ label: 'Cc', value: a.cc }] : []), { label: 'Subject', value: a.subject || '(no subject)' }],
   }),
   handler: async (a, ctx) => {
     const raw = Buffer.from(`To: ${a.to}\r\n${a.cc ? `Cc: ${a.cc}\r\n` : ''}Subject: ${a.subject}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${a.body}`).toString('base64url');
@@ -211,7 +213,7 @@ export const calendarCreateTool = defineTool({
   schema: z.object({ summary: z.string().min(1).max(300), start: z.string().min(10).max(40), end: z.string().min(10).max(40), description: z.string().max(5000).optional(), location: z.string().max(300).optional() }),
   label: () => 'Adding to your calendar…',
   needs: googleNeeds,
-  approval: (a) => ({ title: 'Add calendar event', body: a.description ?? '', fields: [{ label: 'Event', value: a.summary }, { label: 'Starts', value: a.start }, { label: 'Ends', value: a.end }, ...(a.location ? [{ label: 'Where', value: a.location }] : [])] }),
+  approval: (a) => ({ title: 'Add calendar event', headline: a.summary, body: 'Orin wants to add this event to your Google Calendar.', content: a.description || undefined, fields: [{ label: 'Event', value: a.summary }, { label: 'Starts', value: a.start }, { label: 'Ends', value: a.end }, ...(a.location ? [{ label: 'Where', value: a.location }] : [])] }),
   handler: async (a, ctx) => {
     const e = await gapi<{ id: string; htmlLink: string }>(ctx.services, ctx.owner, 'https://www.googleapis.com/calendar/v3/calendars/primary/events', ctx.signal, {
       method: 'POST',

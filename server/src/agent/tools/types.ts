@@ -22,17 +22,53 @@ export type ToolDisplay =
   | { kind: 'file'; path: string; size: number }
   | { kind: 'prompt'; id: string; title: string; status: string; decision: string | null };
 
-/** A request for the user's approval or answer, shown in the app as a card. */
+/** What an approval card shows: the action, the one line it is about, the values and the full content. */
+export interface ApprovalCard {
+  /** the action, as a short heading: "Send email" */
+  title: string;
+  /** a sentence on what happens when the user approves */
+  body: string;
+  /** the one line that names what is reviewed: the subject, the event name, the site */
+  headline?: string;
+  /** the values the user reviews (To, Subject, When...) */
+  fields?: { label: string; value: string }[];
+  /** the content itself, in full: the email body, the command, the form text */
+  content?: string;
+}
+
+/** A login or key the user types into a secure field; it goes straight to the Secure Vault. */
+export interface SecretSpec {
+  /** vault login name it is saved under */
+  name: string;
+  /** site it belongs to (domain) */
+  domain: string;
+  /** what is asked for: a password (with a username field), an API key / token, or a username only */
+  what: 'login' | 'password' | 'api_key';
+}
+
+/**
+ * A request for the user, shown in the app as a pop-up and a card in the chat:
+ * - approval: a risky action waits for Approve / Change / Decline
+ * - question: a choice or a typed answer
+ * - secret: a secure field whose value goes to the Secure Vault, never to the model
+ * - step: something the user does themselves (on a page), then taps Done
+ */
 export interface AskInput {
-  kind: 'approval' | 'question';
+  kind: 'approval' | 'question' | 'secret' | 'step';
   title: string;
   body: string;
+  headline?: string;
+  content?: string;
   fields?: { label: string; value: string }[];
   choices?: string[];
   tool?: string;
+  /** step: the page the user opens */
+  url?: string;
+  /** secret: where the value is saved */
+  secret?: SecretSpec;
 }
 export interface AskResult {
-  /** 'approve' | 'deny' | 'change' | 'answer' | 'expired' | 'cancelled' */
+  /** 'approve' | 'deny' | 'change' | 'answer' | 'done' | 'expired' | 'cancelled' */
   decision: string;
   answer: string | null;
 }
@@ -97,7 +133,7 @@ export interface ToolDef<S extends z.ZodType = z.ZodType> {
   /** Saves user data (memory, notes...): hidden in incognito chats. */
   writes?: boolean;
   /** Risky action: return a card to show the user for approval before the tool runs, or null when no approval is needed. */
-  approval?: (args: z.infer<S>, ctx: ToolContext) => { title: string; body: string; fields?: { label: string; value: string }[] } | null;
+  approval?: (args: z.infer<S>, ctx: ToolContext) => ApprovalCard | null;
   /** Overrides the default tool timeout (e.g. tools that wait for the user). */
   timeoutMs?: number;
   handler: (args: z.infer<S>, ctx: ToolContext) => Promise<ToolResult>;

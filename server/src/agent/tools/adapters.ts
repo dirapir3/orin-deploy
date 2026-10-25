@@ -1,5 +1,6 @@
 import { listFiles, runJsSandboxed, workspaceDir } from '../workspace.js';
 import { z } from 'zod';
+import { commandRisk, isRiskyControl } from '../risk.js';
 import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { defineTool, type AgentServices } from './types.js';
@@ -93,6 +94,10 @@ export const runCodeTool = defineTool({
   schema: z.object({ language: z.enum(['python', 'javascript', 'bash']), code: z.string().min(1).max(50_000) }),
   label: (a) => `Running ${a.language}…`,
   needs: ({ services }) => codeSandboxNeeds(services),
+  approval: (a) => {
+    const why = commandRisk(a.code);
+    return why ? { title: 'Run code that reaches outside', headline: `${a.language} code`, body: `Orin wants to run this code. It ${why}.`, content: a.code } : null;
+  },
   handler: async (a, ctx) => {
     const svc = ctx.services;
     const mode = svc.config.integrations.codeSandbox;
@@ -143,6 +148,18 @@ export const browseTool = defineTool({
   schema: z.object({ url: z.string().min(4).max(2000), actions: z.array(actionSchema).max(15).optional() }),
   label: () => 'Browsing…',
   needs: ({ services }) => browserNeeds(services),
+  approval: (a) => {
+    const acts = a.actions ?? [];
+    const risky = acts.some((x, i) => (x.type === 'click' && isRiskyControl(x.selector ?? '')) || (x.type === 'press' && /enter/i.test(x.value ?? 'Enter') && acts.slice(0, i).some((y) => y.type === 'fill')));
+    if (!risky) return null;
+    const host = (() => { try { return new URL(/^https?:/i.test(a.url) ? a.url : `https://${a.url}`).hostname; } catch { return a.url; } })();
+    return {
+      title: `Act on ${host}`,
+      headline: a.url,
+      body: 'Orin wants to fill in and press things on this page. It may send, buy, book or delete something.',
+      fields: acts.map((x, i) => ({ label: `Step ${i + 1}`, value: `${x.type}${x.selector ? ` ${x.selector}` : ''}${x.value ? `: ${x.value.slice(0, 200)}` : ''}` })),
+    };
+  },
   handler: async (a, ctx) => {
     await assertPublicUrl(a.url, ctx.services.lookup);
     const mod = await importOptional(hasPackage('playwright-core') ? 'playwright-core' : 'playwright');
