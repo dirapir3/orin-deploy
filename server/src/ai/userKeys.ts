@@ -401,6 +401,69 @@ function pinModel(p: ChatProvider, model: string): ChatProvider {
   };
 }
 
+/**
+ * Several of the user's keys in rotation ("Rotate through my keys" in the app). Requests take turns
+ * across the keys (round robin), a key that hits a rate limit or fails rests while the others carry
+ * on, and the server's keys are the last backup. One instance per account + key set, so the turn
+ * order and the resting keys carry over from message to message.
+ */
+const ROTATION_GROUP = 'user:rotation';
+const rotations = new Map<string, UserProviders>();
+
+export function userProvidersRotation(ais: UserAi[], config: AppConfig, server: { chat: ChatProvider | null; agent: ChatProvider | null }, fetchImpl?: FetchLike): UserProviders {
+  if (ais.length === 1) return userProviders(ais[0]!, config, server, fetchImpl);
+  const id = createHash('sha256').update(JSON.stringify([ais.map((a) => [a.key, a.baseUrl, a.model, a.protocol, a.provider, a.label]), Boolean(server.chat), Boolean(server.agent), Boolean(fetchImpl)])).digest('hex');
+  const hit = rotations.get(id);
+  if (hit) return hit;
+  const soft = (p: ChatProvider): ChatProvider => ({
+    ...p,
+    streamChat: async function* (req) {
+      try {
+        yield* p.streamChat(req);
+      } catch (e) {
+        if (e instanceof AppError && e.code === 'provider_bad_request') throw new AppError('provider_unavailable', e.message);
+        throw e;
+      }
+    },
+  });
+  const keyId = (ai: UserAi) => createHash('sha256').update(`user|${ai.key}`).digest('hex').slice(0, 16);
+  const cands = (agent: boolean) =>
+    ais.map((ai, i) => {
+      const p = pinModel(entryProvider(userEntry(ai, config), ai.key, agent, fetchImpl), ai.model);
+      return { provider: soft(p), group: ROTATION_GROUP, label: `${ai.label} (your key ${i + 1}/${ais.length})`, model: ai.model, fastModel: ai.model, visionModel: ai.model, supportsVision: true, keyId: keyId(ai) };
+    });
+  const backup = (provider: ChatProvider | null) =>
+    provider && !provider.isDemo
+      ? [{ provider, group: 'server', label: 'server keys', model: config.chat.model, fastModel: config.chat.fastModel, visionModel: config.chat.visionModel, supportsVision: provider.supportsVision }]
+      : [];
+  const quiet = { onFallback: (ev: { label: string; code: string }) => console.warn(`[ai] ${ev.label} failed (${ev.code}); trying the next of your keys`) };
+  const byModel = new Map(ais.map((a) => [a.model, a]));
+  const wrap = (fb: FallbackChatProvider): ChatProvider => ({
+    id: fb.id,
+    displayName: fb.displayName,
+    isDemo: false,
+    supportsVision: fb.supportsVision,
+    supportsTools: fb.supportsTools,
+    streamChat: async function* (req) {
+      try {
+        for await (const c of fb.streamChat(req)) yield c.type === 'served' && c.provider === ROTATION_GROUP ? { ...c, model: byModel.has(c.model) ? c.model : ais[0]!.model } : c;
+      } finally {
+        fb.rotate(ROTATION_GROUP);
+      }
+    },
+  });
+  const direct = userProviders(ais[0]!, config, server, fetchImpl).direct;
+  const out: UserProviders = {
+    ai: ais[0]!,
+    direct,
+    chat: wrap(new FallbackChatProvider([...cands(false), ...backup(server.chat)], quiet)),
+    agent: wrap(new FallbackChatProvider([...cands(true), ...backup(server.agent)], quiet)),
+  };
+  if (rotations.size > 50) rotations.delete(rotations.keys().next().value as string);
+  rotations.set(id, out);
+  return out;
+}
+
 /** Asks the provider which models this key can use (best effort). */
 export async function listModels(ai: Omit<UserAi, 'ref' | 'label' | 'model'>, fetchImpl: FetchLike = fetch as FetchLike): Promise<string[]> {
   const base = ai.baseUrl.replace(/\/+$/, '');
@@ -497,10 +560,28 @@ export function requestAi(
   account: string,
   header: string | undefined,
 ): UserProviders | null {
-  const sealed = (header ?? '').trim();
-  if (!sealed || !deps.agent) return null;
-  const ai = aiVault(deps.agent.store).resolve(account, sealed);
-  const up = userProviders(ai, deps.config, deps.providers, deps.fetchImpl);
+  const raw = (header ?? '').trim();
+  if (!raw || !deps.agent) return null;
+  // one sealed key, or several separated by commas ("Rotate through my keys")
+  const list = raw.split(',').map((x) => x.trim()).filter(Boolean).slice(0, 20);
+  if (!list.length) return null;
+  const vault = aiVault(deps.agent.store);
+  let up: UserProviders;
+  if (list.length === 1) {
+    up = userProviders(vault.resolve(account, list[0]!), deps.config, deps.providers, deps.fetchImpl);
+  } else {
+    const ais: UserAi[] = [];
+    let firstErr: unknown = null;
+    for (const s of list) {
+      try {
+        ais.push(vault.resolve(account, s));
+      } catch (e) {
+        firstErr ??= e;
+      }
+    }
+    if (!ais.length) throw firstErr;
+    up = userProvidersRotation(ais, deps.config, deps.providers, deps.fetchImpl);
+  }
   deps.agent.setUserProvider?.(account, up.agent);
   return up;
 }

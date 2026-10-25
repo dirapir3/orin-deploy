@@ -120,7 +120,7 @@ export function createAdminRouter(rt: LiveRuntime, opts: AdminOptions): express.
   // Behind an HTTPS proxy that reports a plain-http request: send the browser to https first,
   // so the owner password is never posted in clear text.
   router.use((req, res, next) => {
-    // Some proxies (alwaysdata) send no X-Forwarded-Proto for plain http, so any proxied request
+    // Some proxies send no X-Forwarded-Proto for plain http, so any proxied request
     // that is not https counts as plain http.
     const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0]?.trim();
     const plain = proto === 'http' || (!proto && !req.secure && !!req.headers['x-forwarded-for']);

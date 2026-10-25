@@ -23,7 +23,7 @@ export function sitesRoot(svc: AgentServices): string {
 }
 
 export function siteBaseUrl(svc: AgentServices): string {
-  return (svc.config.agent.publicUrl || process.env.SITES_BASE_URL || 'https://fobeorin.alwaysdata.net').replace(/\/+$/, '');
+  return (svc.config.agent.publicUrl || process.env.SITES_BASE_URL || 'https://orin-latenjn.onrender.com').replace(/\/+$/, '');
 }
 
 function ownerTag(owner: string): string {

@@ -100,6 +100,12 @@ export class FallbackChatProvider implements ChatProvider {
     this.onFallback = opts.onFallback ?? ((ev) => console.warn(`[ai] ${ev.label} failed (${ev.code}); trying the next key/provider`));
   }
 
+  /** Round robin: the next request in this group starts at its next key (spreads use across keys). */
+  rotate(group: string): void {
+    const g = this.groups.find((x) => x.id === group);
+    if (g && g.items.length > 1) g.cursor = (g.cursor + 1) % g.items.length;
+  }
+
   /** Labels of the chain in order (no keys), for health/admin. */
   describe(): { label: string; group: string; model: string; coolingFor: number; keyId: string; ok: number; fail: number; lastError: string }[] {
     const t = this.now();

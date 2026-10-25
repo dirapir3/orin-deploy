@@ -910,7 +910,7 @@ export function loadConfig(rawEnv: Record<string, string | undefined> = process.
       taskMaxSteps: Math.min(Math.max(e.TASK_MAX_STEPS, 2), 60),
       toolTimeoutMs: Math.max(e.AGENT_TOOL_TIMEOUT_MS, 2000),
       dataDir: e.DATA_DIR,
-      publicUrl: e.PUBLIC_URL.replace(/\/+$/, ''),
+      publicUrl: (e.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, ''),
       worker: e.WORKER_ENABLED,
       workerPollMs: Math.max(e.WORKER_POLL_MS, 50),
       schedulerTickMs: Math.max(e.SCHEDULER_TICK_MS, 200),

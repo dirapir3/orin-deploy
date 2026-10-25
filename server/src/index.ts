@@ -68,7 +68,7 @@ const app = createApp({
   },
 });
 
-// Some hosts (alwaysdata, etc.) give a specific address to bind to in IP or HOST.
+// Some hosts give a specific address to bind to in IP or HOST.
 const bindHost = process.env.IP || process.env.HOST || undefined;
 const onListen = () => {
   logger.info('Orin API listening', {
