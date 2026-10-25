@@ -18,6 +18,8 @@ RUN npx tsc -p tsconfig.build.json && npm prune --omit=dev
 
 # Prebuilt Expo web export (npx expo export -p web), served same-origin by the server.
 COPY web ./web
+# Hugging Face repos refuse raw binaries in plain git, so binary web files are stored as *.b64 and decoded here.
+RUN find web -name '*.b64' -exec sh -c 'base64 -d "$1" > "${1%.b64}" && rm "$1"' _ {} \;
 
 # Render's free disk is temporary: /tmp/orin-data is wiped on every restart or redeploy.
 RUN mkdir -p /tmp/orin-data && chown -R 1000:1000 /tmp/orin-data /app
