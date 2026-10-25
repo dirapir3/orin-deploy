@@ -4,6 +4,7 @@ import { defineTool, type AgentServices, type ToolContext } from './types.js';
 import { SANDBOX_WORKDIR, sandboxPath, shq, type ExecResult, type SandboxSession } from '../sandbox/index.js';
 import { copyToWorkspace, listRemote, SAVE_MAX_FILE, SAVE_PREFIX } from '../sandbox/persist.js';
 import { workspaceDir, writeWsFile } from '../workspace.js';
+import { redactSecrets, resolveSecrets, secretsSchema, type SecretRefs } from '../sandbox/secrets.js';
 
 /**
  * Tools that work on Orin's own computer (a cloud sandbox, E2B by default). One sandbox per
@@ -28,6 +29,27 @@ export function formatExec(r: ExecResult): string {
   return `exit code: ${code}\n\nstdout:\n${r.stdout.slice(-8000) || '(empty)'}\n\nstderr:\n${r.stderr.slice(-4000) || '(empty)'}`;
 }
 
+/** Command output with any vault secret replaced by [secret:NAME]. */
+function hide(owner: string, r: ExecResult): ExecResult {
+  return { ...r, stdout: redactSecrets(owner, r.stdout), stderr: redactSecrets(owner, r.stderr) };
+}
+
+/**
+ * A vault key used with the internet is held for the user even for a plain read: a page or a
+ * file Orin read could have told her to send the key somewhere. Local-only use runs straight away.
+ */
+export function secretNetRisk(code: string): string | null {
+  const hosts = [...code.matchAll(/\bhttps?:\/\/([^/\s:'"`]+)/gi)].map((m) => m[1]!.toLowerCase()).filter((h) => !/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/.test(h));
+  if (hosts.length) return `sends a key from your vault to ${[...new Set(hosts)].slice(0, 3).join(', ')}`;
+  if (/\b(curl|wget|nc|ssh|scp|rsync|requests\.|httpx|urllib|aiohttp|http\.client|fetch\(|axios|got\(|socket\.)/i.test(code)) return 'sends a key from your vault over the internet';
+  return null;
+}
+
+/** Approval-card lines naming the vault entries a run uses (names only, never values). */
+export function secretFields(refs: SecretRefs): { label: string; value: string }[] {
+  return refs?.length ? [{ label: 'Uses from your vault', value: refs.map((r) => `${r.name} as $${r.env}`).join(', ') }] : [];
+}
+
 const short = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s).replace(/\s+/g, ' ');
 
 export const sandboxRunTool = defineTool({
@@ -41,27 +63,35 @@ export const sandboxRunTool = defineTool({
     cwd: z.string().max(300).optional().describe(`Folder to run in; relative paths are inside ${SANDBOX_WORKDIR}`),
     timeout_sec: z.number().int().min(5).max(600).optional().describe('Time limit, default 120 s'),
     background: z.boolean().optional().describe('Start it and return at once (for servers that keep running)'),
+    secrets: secretsSchema,
   }),
   label: (a) => `Running ${short(a.command, 40)}…`,
   needs: ({ services }) => sandboxNeeds(services),
   timeoutMs: 660_000,
   approval: (a) => {
-    const why = commandRisk(a.command);
+    const why = commandRisk(a.command) ?? (a.secrets?.length ? secretNetRisk(a.command) : null);
     return why
-      ? { title: 'Run a command that reaches outside', headline: short(a.command, 120), body: `Orin wants to run this on her computer. It ${why}.`, content: a.command, fields: [{ label: 'Runs in', value: sandboxPath(a.cwd) }] }
+      ? {
+          title: 'Run a command that reaches outside',
+          headline: short(a.command, 120),
+          body: `Orin wants to run this on her computer. It ${why}.${a.secrets?.length ? ' It uses keys from your Secure Vault; their values stay hidden.' : ''}`,
+          content: a.command,
+          fields: [{ label: 'Runs in', value: sandboxPath(a.cwd) }, ...secretFields(a.secrets)],
+        }
       : null;
   },
   handler: async (a, ctx) => {
     const cwd = sandboxPath(a.cwd);
     const t0 = Date.now();
+    const { envs, names } = resolveSecrets(ctx, a.secrets);
     if (a.background) {
-      const r = await withSandbox(ctx, (s) => s.execBackground(a.command, { cwd }));
+      const r = await withSandbox(ctx, (s) => s.execBackground(a.command, { cwd, envs }));
       log(ctx, 'command', `Started in background: ${short(a.command)}`);
       return { content: `Started in the background${r.pid ? ` (pid ${r.pid})` : ''}: ${a.command}\nGive it a few seconds, then check it with sandbox_run (e.g. curl -s localhost:PORT) or get a link with sandbox_preview.`, summary: 'Started in background' };
     }
-    const r = await withSandbox(ctx, (s) => s.exec(a.command, { cwd, timeoutMs: (a.timeout_sec ?? 120) * 1000, signal: ctx.signal }));
+    const r = hide(ctx.owner, await withSandbox(ctx, (s) => s.exec(a.command, { cwd, timeoutMs: (a.timeout_sec ?? 120) * 1000, signal: ctx.signal, envs })));
     const ok = r.exitCode === 0;
-    log(ctx, 'command', short(a.command), ok, Date.now() - t0);
+    log(ctx, 'command', `${short(a.command)}${names.length ? ` (with ${names.join(', ')} from your vault)` : ''}`, ok, Date.now() - t0);
     return {
       ok,
       content: formatExec(r),
@@ -94,7 +124,7 @@ export const sandboxReadFileTool = defineTool({
   handler: async (a, ctx) => {
     const p = sandboxPath(a.path);
     const data = await withSandbox(ctx, (s) => s.readFile(p));
-    const text = Buffer.from(data).toString('utf8');
+    const text = redactSecrets(ctx.owner, Buffer.from(data).toString('utf8'));
     return { content: text.length > 20_000 ? `${text.slice(0, 20_000)}\n…(cut, ${text.length} characters in total)` : text || '(empty file)', summary: `Read ${p.split('/').pop()}` };
   },
 });
@@ -195,15 +225,16 @@ export const sandboxCloseTool = defineTool({
 export const sandboxTools = [sandboxRunTool, sandboxWriteFileTool, sandboxReadFileTool, sandboxListFilesTool, sandboxSaveTool, sandboxPreviewTool, sandboxCloseTool];
 
 /** run_code on the sandbox: the code is written to a file in the work folder and run there. */
-export async function runCodeInSandbox(ctx: ToolContext, language: 'python' | 'javascript' | 'bash', code: string): Promise<ExecResult> {
+export async function runCodeInSandbox(ctx: ToolContext, language: 'python' | 'javascript' | 'bash', code: string, secrets?: SecretRefs): Promise<ExecResult> {
+  const { envs, names } = resolveSecrets(ctx, secrets);
   const ext = language === 'python' ? 'py' : language === 'javascript' ? 'mjs' : 'sh';
   const file = `${SANDBOX_WORKDIR}/.orin/run.${ext}`;
   const cmd = language === 'python' ? `python3 ${file}` : language === 'javascript' ? `node ${file}` : `bash ${file}`;
   const t0 = Date.now();
   const r = await withSandbox(ctx, async (s) => {
     await s.writeFile(file, code);
-    return s.exec(cmd, { timeoutMs: 120_000, signal: ctx.signal });
+    return s.exec(cmd, { timeoutMs: 120_000, signal: ctx.signal, envs });
   });
-  log(ctx, 'code', `Ran ${language} (${code.split('\n').length} line${code.includes('\n') ? 's' : ''})`, r.exitCode === 0, Date.now() - t0);
-  return r;
+  log(ctx, 'code', `Ran ${language} (${code.split('\n').length} line${code.includes('\n') ? 's' : ''})${names.length ? ` with ${names.join(', ')} from your vault` : ''}`, r.exitCode === 0, Date.now() - t0);
+  return hide(ctx.owner, r);
 }

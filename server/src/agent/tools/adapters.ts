@@ -5,7 +5,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { defineTool, type AgentServices } from './types.js';
 import { assertPublicUrl } from '../net.js';
-import { runCodeInSandbox } from './sandbox.js';
+import { runCodeInSandbox, secretFields, secretNetRisk } from './sandbox.js';
+import { secretsSchema } from '../sandbox/secrets.js';
 
 /**
  * Pluggable adapters that stay hidden from the model until configured (no fake results).
@@ -91,12 +92,15 @@ export const runCodeTool = defineTool({
   name: 'run_code',
   description:
     'Run a snippet of code and return stdout/stderr. Use for calculations on data, testing snippets, or generating files. With the cloud sandbox (when the sandbox_run tool is available) python, javascript and bash all run on your sandbox computer in its work folder, files stay there between calls, and pip/npm installs work (use sandbox_run for those). Without a cloud sandbox only javascript is available (Node ES module; top-level await ok); it runs in the user\'s workspace folder, so files written with fs (or write_file) become artifacts the user can open. No npm packages.',
-  schema: z.object({ language: z.enum(['python', 'javascript', 'bash']), code: z.string().min(1).max(50_000) }),
+  schema: z.object({ language: z.enum(['python', 'javascript', 'bash']), code: z.string().min(1).max(50_000), secrets: secretsSchema }),
   label: (a) => `Running ${a.language}…`,
   needs: ({ services }) => codeSandboxNeeds(services),
   approval: (a) => {
     const why = commandRisk(a.code);
-    return why ? { title: 'Run code that reaches outside', headline: `${a.language} code`, body: `Orin wants to run this code. It ${why}.`, content: a.code } : null;
+    const why2 = why ?? (a.secrets?.length ? secretNetRisk(a.code) : null);
+    return why2
+      ? { title: 'Run code that reaches outside', headline: `${a.language} code`, body: `Orin wants to run this code. It ${why2}.${a.secrets?.length ? ' It uses keys from your Secure Vault; their values stay hidden.' : ''}`, content: a.code, fields: secretFields(a.secrets) }
+      : null;
   },
   handler: async (a, ctx) => {
     const svc = ctx.services;
@@ -105,7 +109,7 @@ export const runCodeTool = defineTool({
       return { ok: false, content: `Only javascript can run on this server (no cloud sandbox is set up). Rewrite the code in JavaScript (Node).`, summary: 'Only JavaScript here' };
     }
     if (mode === 'e2b' && svc.sandboxes) {
-      const r = await runCodeInSandbox(ctx, a.language, a.code);
+      const r = await runCodeInSandbox(ctx, a.language, a.code, a.secrets);
       const ok = r.exitCode === 0;
       return {
         ok,
@@ -114,6 +118,7 @@ export const runCodeTool = defineTool({
         display: { kind: 'code', stdout: r.stdout.slice(-4000), stderr: r.stderr.slice(-2000) },
       };
     }
+    if (a.secrets?.length) return { ok: false, content: 'Vault keys can only be used on your own computer (the E2B sandbox), which is not set up on this server.', summary: 'Vault keys need the sandbox' };
     const out =
       mode === 'e2b'
         ? await runE2B(svc, a.language, a.code, ctx.signal)

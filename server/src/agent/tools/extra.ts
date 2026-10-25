@@ -27,7 +27,7 @@ export const askUserTool = defineTool({
 export const askSecretTool = defineTool({
   name: 'ask_secret',
   description:
-    "Ask the user for a password, a login (username + password) or an API key/token through a secure field in the app. What they type goes straight into their Secure Vault under the name you give; you never see it. Then use it by name (browser_submit login). Never ask for passwords or keys in chat text; use this instead.",
+    "Ask the user for a password, a login (username + password) or an API key/token through a secure field in the app. What they type goes straight into their Secure Vault under the name you give; you never see it. Then use it by name: browser_submit login for a website, or for an API key in a command or code on your computer pass secrets [{name, env}] to sandbox_run or run_code and read the environment variable. Never ask for passwords or keys in chat text; use this instead.",
   schema: z.object({
     name: z.string().trim().min(1).max(80).describe('Vault login name to save it under, e.g. "GitHub" or "OpenWeather key"'),
     site: z.string().trim().min(3).max(200).describe('Domain it belongs to, e.g. github.com'),
@@ -50,7 +50,7 @@ export const askSecretTool = defineTool({
     });
     if (r.decision !== 'answer') return { ok: false, content: `The user did not give it (${r.decision}). Do not ask again unless they bring it up.`, summary: 'Not given' };
     return {
-      content: `Saved in the user's Secure Vault as "${a.name}" for ${domain}. You cannot see the value. To sign in, use browser_submit with login "${a.name}".`,
+      content: `Saved in the user's Secure Vault as "${a.name}" for ${domain}. You cannot see the value. ${a.what === 'api_key' ? `To use it, pass secrets [{"name":"${a.name}","env":"SOME_API_KEY"}] to sandbox_run or run_code and read $SOME_API_KEY; never print it.` : `To sign in, use browser_submit with login "${a.name}".`}`,
       summary: `Saved to your vault as ${a.name}`.slice(0, 80),
     };
   },

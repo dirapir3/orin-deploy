@@ -56,7 +56,7 @@ class E2BSession implements SandboxSession {
     return this.sbx.sandboxId;
   }
 
-  async exec(cmd: string, o: { cwd?: string; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ExecResult> {
+  async exec(cmd: string, o: { cwd?: string; timeoutMs?: number; signal?: AbortSignal; envs?: Record<string, string> } = {}): Promise<ExecResult> {
     let stdout = '';
     let stderr = '';
     const timeoutMs = o.timeoutMs ?? 120_000;
@@ -64,6 +64,7 @@ class E2BSession implements SandboxSession {
       const r = await this.sbx.commands.run(cmd, {
         cwd: o.cwd ?? SANDBOX_WORKDIR,
         timeoutMs,
+        ...(o.envs && Object.keys(o.envs).length ? { envs: o.envs } : {}),
         // keep the tail if a command is very chatty
         onStdout: (d: string) => void (stdout = cap(stdout + d, 60_000)),
         onStderr: (d: string) => void (stderr = cap(stderr + d, 30_000)),
@@ -83,8 +84,8 @@ class E2BSession implements SandboxSession {
     }
   }
 
-  async execBackground(cmd: string, o: { cwd?: string } = {}) {
-    const h = await this.sbx.commands.run(cmd, { cwd: o.cwd ?? SANDBOX_WORKDIR, background: true, timeoutMs: 0 });
+  async execBackground(cmd: string, o: { cwd?: string; envs?: Record<string, string> } = {}) {
+    const h = await this.sbx.commands.run(cmd, { cwd: o.cwd ?? SANDBOX_WORKDIR, background: true, timeoutMs: 0, ...(o.envs && Object.keys(o.envs).length ? { envs: o.envs } : {}) });
     return { pid: typeof h.pid === 'number' ? h.pid : null };
   }
 

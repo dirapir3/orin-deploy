@@ -12,6 +12,8 @@ export interface ExecOptions {
   cwd?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** extra environment variables for this command only (vault secrets) */
+  envs?: Record<string, string>;
 }
 
 export interface ExecResult {
@@ -29,7 +31,7 @@ export interface SandboxSession {
   /** Runs a shell command (bash -lc) and waits for it. Never throws for a non-zero exit. */
   exec(cmd: string, opts?: ExecOptions): Promise<ExecResult>;
   /** Starts a long-running command (a dev server) and returns at once. */
-  execBackground(cmd: string, opts?: { cwd?: string }): Promise<{ pid: number | null }>;
+  execBackground(cmd: string, opts?: { cwd?: string; envs?: Record<string, string> }): Promise<{ pid: number | null }>;
   writeFile(path: string, data: string | Uint8Array): Promise<void>;
   readFile(path: string): Promise<Uint8Array>;
   /** Public https address of a port inside the sandbox, when the provider supports it. */
