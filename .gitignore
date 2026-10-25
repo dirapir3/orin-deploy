@@ -1,0 +1,7 @@
+# The web build keeps its fonts and icons under web/assets/node_modules, including the icon fonts
+# under @expo/vector-icons/build/vendor. The machine-wide git ignore skips node_modules/, build/
+# and vendor, so always include everything under web/.
+!web/assets/node_modules/
+!web/assets/node_modules/**/build/
+!web/assets/node_modules/**/vendor/
+!web/**
