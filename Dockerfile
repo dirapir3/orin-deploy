@@ -7,7 +7,8 @@ ENV NODE_ENV=production \
     TRUST_PROXY=1 \
     DATA_DIR=/tmp/orin-data \
     ADMIN_ENV_FILE=/tmp/orin-data/admin.env \
-    WEB_DIR=/app/web
+    WEB_DIR=/app/web \
+    IMAGE_PROVIDER=pollinations
 
 WORKDIR /app
 COPY server/package.json server/package-lock.json ./
