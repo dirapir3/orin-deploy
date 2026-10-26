@@ -18,8 +18,8 @@ J21=/usr/lib/jvm/java-21-openjdk-amd64
 if [ -z "$J21" ] || [ ! -x "$J21/bin/java" ]; then
   echo "== Installing JDK 21 (Capacitor 8 needs it)"
   sudo -n apt-get update -qq >/dev/null && sudo -n apt-get install -y -qq openjdk-21-jdk-headless >/dev/null || { echo "Could not install JDK 21"; exit 1; }
-  sudo -n update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java >/dev/null 2>&1
-  sudo -n update-alternatives --set javac /usr/lib/jvm/java-17-openjdk-amd64/bin/javac >/dev/null 2>&1
+  sudo -n update-alternatives --set java /usr/lib/jvm/java-21-openjdk-amd64/bin/java >/dev/null 2>&1
+  sudo -n update-alternatives --set javac /usr/lib/jvm/java-21-openjdk-amd64/bin/javac >/dev/null 2>&1
   J21=/usr/lib/jvm/java-21-openjdk-amd64
 fi
 cd "$DIR" || { echo "No such folder: $DIR"; exit 1; }
@@ -73,6 +73,8 @@ print('Release build will be signed with the debug key' if s2 != s else 'Could n
 EOF
 fi
 
+# Pin this project's Gradle to JDK 21, so later `npx cap build android` or `./gradlew` runs use it too.
+GP=android/gradle.properties; touch "$GP"; sed -i '/^org.gradle.java.home=/d' "$GP"; printf "\norg.gradle.java.home=%s\n" "$J21" >> "$GP"
 cd android || exit 1
 chmod +x gradlew
 export JAVA_HOME="$J21" PATH="$J21/bin:$PATH"

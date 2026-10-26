@@ -6,6 +6,8 @@
 # Release builds are signed with the debug key (fine for installing on a phone, not for the Play Store).
 set -o pipefail
 . /etc/profile.d/00-orin-env.sh 2>/dev/null
+# Expo / React Native builds use JDK 17 (JDK 21 is the default java for Capacitor).
+J17="${JAVA17_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}"; [ -x "$J17/bin/java" ] && export JAVA_HOME="$J17" PATH="$J17/bin:$PATH"
 DIR=.; VARIANT=Release
 for a in "$@"; do case "$a" in --debug) VARIANT=Debug ;; -h|--help) sed -n 2,6p "$0"; exit 0 ;; *) DIR="$a" ;; esac; done
 cd "$DIR" || { echo "No such folder: $DIR"; exit 1; }

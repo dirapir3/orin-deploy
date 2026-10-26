@@ -1,6 +1,6 @@
 # Orin's computer: the E2B sandbox template "orin-workspace".
 # Built with the admin API (POST /admin/app/api/e2b/template/build) using the server's E2B key.
-# Ubuntu 24.04 + Node LTS (npm/yarn/pnpm), Expo + EAS CLI, Capacitor CLI, JDK 17 (+ JDK 21 for Capacitor), Android SDK/NDK, Python 3,
+# Ubuntu 24.04 + Node LTS (npm/yarn/pnpm), Expo + EAS CLI, Capacitor CLI, JDK 21 (default, Capacitor) + JDK 17 (Expo), Android SDK/NDK, Python 3,
 # Chromium + Playwright with a live view (Xvfb + noVNC), and file tools (PDF, images, office, media, zip).
 FROM ubuntu:24.04
 USER root
@@ -102,17 +102,22 @@ RUN printf '%s\n' \
 # (the build script swaps in the base64 of e2b/orin-android-build; see tools/e2b_tpl_build.sh)
 RUN echo '__ORIN_ANDROID_BUILD_B64__' | base64 -d > /usr/local/bin/orin-android-build && chmod 755 /usr/local/bin/orin-android-build
 
-# Capacitor (web app -> Android APK) beside Expo. Capacitor 8 builds need JDK 21; Expo keeps JDK 17, which
-# stays the default java and JAVA_HOME. orin-capacitor-build switches to JDK 21 for its own Gradle run only.
+# Capacitor (web app -> Android APK) beside Expo. Capacitor 8 needs JDK 21, so JDK 21 is the DEFAULT java,
+# javac and JAVA_HOME everywhere (image ENV, login shells, /etc/environment): `npx cap build`, `cap run`,
+# `./gradlew` in a Capacitor project all just work. JDK 17 stays installed ($JAVA17_HOME); orin-android-build
+# switches to it for Expo / React Native builds.
 # (the build script swaps in the base64 of e2b/orin-capacitor-build; see tools/e2b_tpl_build.sh)
 RUN apt-get update && apt-get install -y --no-install-recommends openjdk-21-jdk-headless && rm -rf /var/lib/apt/lists/* \
- && update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java \
- && update-alternatives --set javac /usr/lib/jvm/java-17-openjdk-amd64/bin/javac \
- && java -version 2>&1 | head -1 && /usr/lib/jvm/java-21-openjdk-amd64/bin/java -version 2>&1 | head -1 \
+ && update-alternatives --set java /usr/lib/jvm/java-21-openjdk-amd64/bin/java \
+ && update-alternatives --set javac /usr/lib/jvm/java-21-openjdk-amd64/bin/javac \
+ && sed -i 's#java-17-openjdk-amd64#java-21-openjdk-amd64#g' /etc/profile.d/00-orin-env.sh /etc/environment \
+ && printf '%s\n' 'export JAVA21_HOME=/usr/lib/jvm/java-21-openjdk-amd64' 'export JAVA17_HOME=/usr/lib/jvm/java-17-openjdk-amd64' >> /etc/profile.d/00-orin-env.sh \
+ && printf '%s\n' 'JAVA21_HOME=/usr/lib/jvm/java-21-openjdk-amd64' 'JAVA17_HOME=/usr/lib/jvm/java-17-openjdk-amd64' >> /etc/environment \
+ && java -version 2>&1 | head -1 && javac -version \
  && npm i -g @capacitor/cli@8 && npm cache clean --force && chmod -R a+rwX /opt/npm-global \
- && ln -sf /opt/npm-global/bin/cap /usr/local/bin/cap \
- && echo 'export JAVA21_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> /etc/profile.d/00-orin-env.sh \
- && echo 'JAVA21_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> /etc/environment
+ && ln -sf /opt/npm-global/bin/cap /usr/local/bin/cap
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 JAVA21_HOME=/usr/lib/jvm/java-21-openjdk-amd64 JAVA17_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH=/usr/lib/jvm/java-21-openjdk-amd64/bin:$PATH
 RUN echo '__ORIN_CAPACITOR_BUILD_B64__' | base64 -d > /usr/local/bin/orin-capacitor-build && chmod 755 /usr/local/bin/orin-capacitor-build
 
 # Commands run as the last USER. Orin's server expects the normal E2B user "user" (home /home/user, work

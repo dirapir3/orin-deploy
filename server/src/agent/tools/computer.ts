@@ -54,7 +54,7 @@ const jobId = () => `job-${new Date().toISOString().slice(5, 16).replace(/[-T:]/
 export const sandboxJobTool = defineTool({
   name: 'sandbox_job',
   description:
-    'Run a long command in the background on your computer and check on it: Android/Gradle builds (they take 10 to 30 minutes), big installs, test suites, data jobs. action start runs the command and returns a job id at once; its whole output goes to a log file. action status shows whether it is still running, its exit code and the last lines of the log; check every few minutes until it finishes. action stop ends it, action list shows jobs. To turn a web app into an Android APK with Capacitor, start the job `orin-capacitor-build <folder> --name "App Name"` (optional --id com.example.app): the folder is a plain HTML/CSS/JS site with index.html or a Vite/React/Vue/Svelte project; it runs npm run build when there is one, adds Capacitor 8 and the Android platform, syncs and builds with JDK 21 (a few minutes the first time; a small app is a few MB) and prints the APK path. To build an Expo or React Native app into an Android APK, start the job `orin-android-build <project-folder>`: it installs packages, runs expo prebuild when there is no android folder, builds with settings sized for this machine (about 7 to 15 minutes the first time) and prints the APK path. Either way, hand the APK to the user with sandbox_save on that one file. ' +
+    'Run a long command in the background on your computer and check on it: Android/Gradle builds (they take 10 to 30 minutes), big installs, test suites, data jobs. action start runs the command and returns a job id at once; its whole output goes to a log file. action status shows whether it is still running, its exit code and the last lines of the log; pass wait 150 so it waits for the job to finish (up to 150 s) instead of checking again and again. action stop ends it, action list shows jobs. To turn a web app into an Android APK with Capacitor, start the job `orin-capacitor-build <folder> --name "App Name"` (optional --id com.example.app): the folder is a plain HTML/CSS/JS site with index.html or a Vite/React/Vue/Svelte project; it runs npm run build when there is one, adds Capacitor 8 and the Android platform, syncs and builds with JDK 21 (about 2 to 3 minutes the first time; a small app is about 3 MB) and prints the APK path. Always use orin-capacitor-build for Capacitor APKs, not npx cap build or ./gradlew by hand; JDK 21 is the default java, JDK 17 is at $JAVA17_HOME. To build an Expo or React Native app into an Android APK, start the job `orin-android-build <project-folder>`: it installs packages, runs expo prebuild when there is no android folder, builds with settings sized for this machine (about 7 to 15 minutes the first time) and prints the APK path. Either way, hand the APK to the user with sandbox_save on that one file. ' +
     'Your computer lives at most about an hour, so a long job starts on a fresh computer when the current one has little time left: put every step the job needs in the command (cd into the project, npm install, then the build). Files outside node_modules and build folders are restored on the fresh computer.',
   schema: z.object({
     action: z.enum(['start', 'status', 'stop', 'list']),
@@ -62,6 +62,7 @@ export const sandboxJobTool = defineTool({
     cwd: z.string().max(300).optional().describe(`start: folder to run in, relative to ${SANDBOX_WORKDIR}`),
     id: z.string().max(60).optional().describe('status/stop: the job id from start (default: the latest job)'),
     lines: z.number().int().min(5).max(400).optional().describe('status: how many log lines to show (default 40)'),
+    wait: z.number().int().min(0).max(150).optional().describe('status: wait up to this many seconds for the job to finish before answering (default 0); use 150 for builds'),
     secrets: secretsSchema,
   }),
   label: (a) => (a.action === 'start' ? `Starting ${short(a.command ?? '', 40)}…` : a.action === 'status' ? 'Checking the job…' : a.action === 'stop' ? 'Stopping the job…' : 'Listing jobs…'),
@@ -95,7 +96,7 @@ export const sandboxJobTool = defineTool({
       });
       m.markJob(ctx.owner);
       log(ctx, 'command', `Background job ${id}: ${short(a.command)}`);
-      return { content: `Started job ${id} in ${cwd}.${fresh}\nLog: ${base}.log\nCheck it with sandbox_job action status (every few minutes for a build).`, summary: `Started ${id}` };
+      return { content: `Started job ${id} in ${cwd}.${fresh}\nLog: ${base}.log\nCheck it with sandbox_job action status and wait 150 (repeat until it finishes; keep going until the result is delivered).`, summary: `Started ${id}` };
     }
     if (a.action === 'list') {
       const r = await withSandbox(ctx, (s) => s.exec(`cd ${JOBS} 2>/dev/null && for f in $(ls -t *.cmd 2>/dev/null | head -20); do j=\${f%.cmd}; st=running; [ -e $j.exit ] && st="exit $(cat $j.exit)"; echo "$j | $st | $(sed -n 2p $f | cut -c1-100)"; done`, { cwd: '/', timeoutMs: 30_000 }));
@@ -110,7 +111,7 @@ export const sandboxJobTool = defineTool({
     const r = hide(
       ctx.owner,
       await withSandbox(ctx, (s) =>
-        s.exec(`cd ${JOBS} 2>/dev/null || exit 3; j=${id}; [ -e $j.cmd ] || exit 4; echo "JOB $j"; if [ -e $j.exit ]; then echo "STATE finished, exit code $(cat $j.exit)"; else echo "STATE running for $(( ($(date +%s) - $(stat -c %Y $j.pid 2>/dev/null || stat -c %Y $j.cmd)) / 60 )) min"; fi; echo "LOG ${JOBS}/$j.log ($(wc -l < $j.log 2>/dev/null || echo 0) lines)"; echo ---; tail -n ${n} $j.log 2>/dev/null | cut -c1-400`, { cwd: '/', timeoutMs: 30_000 }),
+        s.exec(`cd ${JOBS} 2>/dev/null || exit 3; j=${id}; [ -e $j.cmd ] || exit 4; for _ in $(seq 1 ${Math.ceil((a.wait ?? 0) / 5)}); do [ -e $j.exit ] && break; sleep 5; done; echo "JOB $j"; if [ -e $j.exit ]; then echo "STATE finished, exit code $(cat $j.exit)"; else echo "STATE running for $(( ($(date +%s) - $(stat -c %Y $j.pid 2>/dev/null || stat -c %Y $j.cmd)) / 60 )) min"; fi; echo "LOG ${JOBS}/$j.log ($(wc -l < $j.log 2>/dev/null || echo 0) lines)"; echo ---; tail -n ${n} $j.log 2>/dev/null | cut -c1-400`, { cwd: '/', timeoutMs: 30_000 + (a.wait ?? 0) * 1000 }),
       ),
     );
     if (r.exitCode !== 0) return { ok: false, content: 'No such job on this computer. Jobs from an earlier computer are gone (it lives about an hour); start it again.', summary: 'No such job' };
