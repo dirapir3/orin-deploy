@@ -410,6 +410,11 @@ export async function connectTokenApp(svc: AgentServices, owner: string, id: Tok
   let account: string;
   try {
     account = await app.verify(svc, token, ctrl.signal);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // first-time connect: "refused the token ... connect again" reads oddly here; say what to do instead
+    if (/refused the token/.test(msg)) throw new Error('It is wrong or has expired. Check you copied all of it.');
+    throw e;
   } finally {
     clearTimeout(timer);
   }
