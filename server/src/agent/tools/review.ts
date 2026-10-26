@@ -9,6 +9,9 @@ import { workspaceDir } from '../workspace.js';
 import { defineTool, type ToolContext } from './types.js';
 import { withSandbox } from './sandbox.js';
 
+/** The visual score a build needs to pass (scored against the design skill in agent/designKit.ts). */
+export const PASS_SCORE = 8;
+
 /**
  * review_design: Orin looks at what she built before calling it done. It renders the page in a
  * headless browser on her computer at phone and desktop sizes, measures what users would hit
@@ -23,8 +26,6 @@ const SHOT_DIR = `${SANDBOX_WORKDIR}/screenshots`;
 export const REVIEW_PY = String.raw`#!/usr/bin/env python3
 import base64, http.server, json, os, socketserver, sys, threading
 
-/** The visual score a build needs to pass (scored against the design skill in agent/designKit.ts). */
-export const PASS_SCORE = 8;
 from playwright.sync_api import sync_playwright
 
 METRICS = r"""
