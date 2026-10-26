@@ -212,6 +212,8 @@ export function agentExtraRouter(deps: Deps): Router {
     agentOwners(acc).forEach((o, i) => {
       const agentId = CHARACTERS[i]!.id;
       for (const t of st.listTasks(o, { limit: 60 })) tasks.push({ ...t, owner: undefined, agent: agentId });
+      // work done inside a chat reply (a build, browsing, files) is listed too, not only background tasks
+      for (const a of chatRuns.activity(o)) tasks.push({ ...a, agent: agentId });
       for (const x of st.listSchedules(o)) schedules.push({ ...x, owner: undefined, agent: agentId });
       for (const x of st.listSkills(o)) skills.push({ ...x, owner: undefined, agent: agentId });
       for (const x of st.listReminders(o)) reminders.push({ ...x, owner: undefined, agent: agentId });

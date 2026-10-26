@@ -40,6 +40,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   // does not stop it (the app can pick it up again, see chatRuns.ts). Stop goes through
   // POST /v1/agent/runs/:id/cancel.
   const run = chatRuns.create(owner, account, body.replyId ?? null, conversationId);
+  run.incognito = incognito;
   const controller = run.controller;
   const sse = (_res: Response, event: string, data: unknown) => run.emit(event, data);
   const limit = setTimeout(() => controller.abort(), DETACHED_RUN_MS);
@@ -114,6 +115,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
         : async (msgs) => {
             const lastUser = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
             const title = lastUser.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Carrying on';
+            run.handedOff = true; // Activity lists the background task from here on, not this reply
             return agent.continueInBackground(owner, { title, prompt: lastUser, messages: msgs, conversationId, timezone });
           },
       onEvent: (ev) => {
@@ -123,7 +125,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
           sse(res, 'delta', { text: ev.text });
         } else if (ev.type === 'interim') sse(res, 'interim', { text: ev.text });
         else if (ev.type === 'tool_start') {
-          run.step = ev.label || ev.name;
+          run.noteStep(ev.label || ev.name.replace(/_/g, ' '));
           sse(res, 'tool', { phase: 'start', id: ev.id, name: ev.name, label: ev.label });
         } else if (ev.type === 'served') {
           served = { provider: ev.provider, model: ev.model };
@@ -132,6 +134,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       },
     });
     if (controller.signal.aborted) {
+      run.outcome = { status: 'cancelled' };
       usage.record(req.auth, { kind: 'chat', provider: provider.id, model, status: 'cancelled', durationMs: Date.now() - started, units: chars });
       return;
     }
@@ -143,6 +146,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       reply = result.failedTools.length ? "Some steps didn't work, and I stopped before finishing. Ask me to try again, or tell me what to change." : 'Done.';
       if (chars === 0) sse(res, 'delta', { text: reply });
     }
+    run.outcome = { status: !result.reply && result.failedTools.length ? 'failed' : 'done', result: reply };
     deliverIfAway(reply);
     sse(res, 'done', {
       finishReason: result.finishReason === 'length' || result.finishReason === 'max_tokens' ? 'length' : 'stop',
@@ -158,6 +162,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     const e = toAppError(err);
     if (e.code !== 'cancelled') logger.warn('agent chat failed', { code: e.code, provider: provider.id, message: e.message });
     usage.record(req.auth, { kind: 'chat', provider: provider.id, model, status: e.code === 'cancelled' ? 'cancelled' : 'error', durationMs: Date.now() - started, errorCode: e.code });
+    run.outcome = controller.signal.aborted ? { status: 'cancelled' } : { status: 'failed', error: e.message };
     if (!controller.signal.aborted) {
       deliverIfAway(`I ran into a problem and couldn't finish: ${e.message}`);
       sse(res, 'error', e.toJSON().error);

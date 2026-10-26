@@ -2,7 +2,8 @@ import { Router, type Request } from 'express';
 import { z } from 'zod';
 import type { Deps } from '../app.js';
 import { AppError } from '../errors.js';
-import { agentOwnerKey } from '../middleware/auth.js';
+import { agentOwnerKey, agentOwners, requesterKey } from '../middleware/auth.js';
+import { chatRuns } from '../agent/chatRuns.js';
 import { parseBody } from './util.js';
 import { capabilityReport } from '../agent/capabilities.js';
 import { computeNextRun } from '../agent/tools/tasks.js';
@@ -116,7 +117,22 @@ export function agentRouter(deps: Deps): Router {
   r.get('/agent/tasks', (req, res) => {
     res.json({ tasks: st.listTasks(owner(req), { status: typeof req.query.status === 'string' ? req.query.status : undefined, unacked: req.query.unacked === '1', limit: Math.min(Number(req.query.limit) || 50, 200) }) });
   });
+  // "reply:<run id>" is work done inside a chat reply, listed in Activity next to the stored tasks
+  // (see chatRuns.activity). It opens, stops and acks through the same routes, so every app build works.
+  const replyRow = (req: Request) => {
+    const id = idParam(req);
+    for (const o of agentOwners(requesterKey(req))) {
+      const a = chatRuns.activity(o).find((x) => x.id === id);
+      if (a) return a;
+    }
+    return null;
+  };
   r.get('/agent/tasks/:id', (req, res) => {
+    if (idParam(req).startsWith('reply:')) {
+      const a = replyRow(req);
+      if (!a) throw new AppError('not_found', 'That work is no longer listed. Its reply is in the chat.');
+      return void res.json({ task: a });
+    }
     const t = st.getTask(owner(req), idParam(req));
     if (!t) throw new AppError('not_found', 'Task not found.');
     res.json({ task: t });
@@ -132,10 +148,17 @@ export function agentRouter(deps: Deps): Router {
     res.status(201).json({ task: t });
   });
   r.post('/agent/tasks/:id/cancel', (req, res) => {
+    if (idParam(req).startsWith('reply:')) {
+      const run = chatRuns.get(idParam(req).slice(6), requesterKey(req));
+      if (!run || run.done) throw new AppError('not_found', 'No running task with that id.');
+      run.controller.abort();
+      return void res.json({ ok: true });
+    }
     if (!agent.cancelTask(owner(req), idParam(req))) throw new AppError('not_found', 'No running task with that id.');
     res.json({ ok: true });
   });
   r.post('/agent/tasks/:id/ack', (req, res) => {
+    if (idParam(req).startsWith('reply:')) return void res.json({ ok: true });
     st.ackTask(owner(req), idParam(req));
     res.json({ ok: true });
   });
