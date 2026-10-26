@@ -308,7 +308,7 @@ export class AgentRuntime {
     ];
     const onEvent = (ev: AgentEvent) => {
       if (ev.type === 'tool_start') this.store.addTaskEvent(task.id, 'tool', ev.label);
-      else if (ev.type === 'tool_end') this.store.addTaskEvent(task.id, ev.ok ? 'tool_done' : 'tool_error', ev.summary);
+      else if (ev.type === 'tool_end') this.store.addTaskEvent(task.id, ev.ok ? 'tool_done' : 'tool_error', ev.summary || (ev.ok ? 'Done' : 'Ran into an error'));
     };
     const res = await runAgent({
       provider,
@@ -323,7 +323,8 @@ export class AgentRuntime {
       onEvent,
     });
     if (!res.text.trim()) throw new Error('The model returned an empty result.');
-    return res.text.trim();
+    // The result is what the user reads: the final answer, not the narration between tool calls.
+    return (res.reply || res.text).trim();
   }
 
   private async complete(messages: ProviderMessage[], signal: AbortSignal, model: string, maxOutputTokens = 1500): Promise<string> {

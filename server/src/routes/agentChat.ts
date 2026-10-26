@@ -87,7 +87,8 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
         if (ev.type === 'delta') {
           chars += ev.text.length;
           sse(res, 'delta', { text: ev.text });
-        } else if (ev.type === 'tool_start') sse(res, 'tool', { phase: 'start', id: ev.id, name: ev.name, label: ev.label });
+        } else if (ev.type === 'interim') sse(res, 'interim', { text: ev.text });
+        else if (ev.type === 'tool_start') sse(res, 'tool', { phase: 'start', id: ev.id, name: ev.name, label: ev.label });
         else if (ev.type === 'served') {
           served = { provider: ev.provider, model: ev.model };
           sse(res, 'served', served);
@@ -99,10 +100,12 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       return;
     }
     if (chars === 0 && result.toolCalls === 0) throw new AppError('provider_unavailable', 'The AI provider returned an empty response.');
-    if (chars === 0) {
-      // The model used tools but wrote nothing; give the user something honest.
-      const text = 'Done.';
-      sse(res, 'delta', { text });
+    // The reply the app keeps: the final answer without the narration written between tool calls.
+    // When the model wrote nothing after using tools, say honestly how it went instead of a bare "Done."
+    let reply = result.reply;
+    if (!reply) {
+      reply = result.failedTools.length ? "Some steps didn't work, and I stopped before finishing. Ask me to try again, or tell me what to change." : 'Done.';
+      if (chars === 0) sse(res, 'delta', { text: reply });
     }
     sse(res, 'done', {
       finishReason: result.finishReason === 'length' || result.finishReason === 'max_tokens' ? 'length' : 'stop',
@@ -110,6 +113,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       demo: false,
       steps: result.steps,
       toolCalls: result.toolCalls,
+      reply,
       ...(served.provider !== provider.id || served.model !== model ? { servedBy: served } : {}),
     });
     usage.record(req.auth, { kind: 'chat', provider: served.provider, model: served.model, status: 'ok', inputTokens: result.inputTokens || undefined, outputTokens: result.outputTokens || undefined, units: chars, durationMs: Date.now() - started });

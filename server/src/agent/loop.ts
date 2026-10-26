@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ChatProvider, ProviderMessage, ToolCall } from '../ai/types.js';
 import { AppError } from '../errors.js';
+import { friendlyLabel, friendlySummary } from './friendly.js';
 import { toToolSpec, type ToolContext, type ToolDef, type ToolDisplay } from './tools/types.js';
 
 export type AgentEvent =
@@ -8,6 +9,8 @@ export type AgentEvent =
   | { type: 'tool_start'; id: string; name: string; label: string; args: unknown }
   | { type: 'tool_end'; id: string; name: string; ok: boolean; summary: string; display?: ToolDisplay; durationMs: number }
   | { type: 'step'; step: number }
+  /** the text just streamed was narration before tool calls ("Let me set that up"), not the reply */
+  | { type: 'interim'; text: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'served'; provider: string; model: string };
 
@@ -35,6 +38,14 @@ export interface RunAgentResult {
   displays: ToolDisplay[];
   /** provider/model that answered the last step (differs from the primary when the fallback chain stepped in) */
   servedBy?: { provider: string; model: string };
+  /**
+   * What the user should keep as the reply: the final step's text, without the narration written
+   * before tool calls. Falls back to the last narration when the final step wrote nothing (the
+   * answer came before a trailing tool call), and is empty when the model wrote nothing at all.
+   */
+  reply: string;
+  /** tools that ended with ok=false, in order (names), so callers never claim plain success */
+  failedTools: string[];
 }
 
 function parseArgs(raw: string): unknown {
@@ -99,6 +110,12 @@ export async function executeTool(tool: ToolDef | undefined, call: ToolCall, ctx
   }
 }
 
+/** Short text with no code, list or table: progress talk, not an answer. */
+export function isNarration(t: string): boolean {
+  const s = t.trim();
+  return s.length > 0 && s.length <= 400 && s.split('\n').filter((l) => l.trim()).length <= 3 && !/```|^\s*[-*\d]+[.)]?\s|\|.*\|/m.test(s);
+}
+
 /**
  * The tool-calling loop: stream the model's answer; when it asks for tools, run them (in parallel),
  * feed results back (errors included, so the model can recover) and continue, up to maxSteps.
@@ -115,6 +132,10 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
   let outputTokens = 0;
   const displays: ToolDisplay[] = [];
   let servedBy: { provider: string; model: string } | undefined;
+  let finalText = '';
+  let lastInterim = '';
+  let kept = '';
+  const failedTools: string[] = [];
 
   while (steps < o.maxSteps) {
     if (o.signal.aborted) throw new AppError('cancelled', 'Cancelled.');
@@ -145,7 +166,10 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       }
     }
     text += stepText;
-    if (!calls.length) break;
+    if (!calls.length) {
+      finalText = stepText;
+      break;
+    }
 
     // Keep ids unique even when a model reuses them.
     const seen = new Set<string>();
@@ -157,6 +181,15 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
     if (stepText && !/\s$/.test(stepText)) {
       text += '\n\n';
       o.onEvent({ type: 'delta', text: '\n\n' });
+    }
+    if (stepText.trim()) {
+      // Short lines before tool calls are progress narration ("Setting it up now"): shown as the
+      // working line, kept out of the reply. Longer text is real content (an answer written before
+      // a trailing tool call) and stays in the reply.
+      if (isNarration(stepText)) {
+        lastInterim = stepText;
+        o.onEvent({ type: 'interim', text: /\s$/.test(stepText) ? stepText : `${stepText}\n\n` });
+      } else kept += /\s$/.test(stepText) ? stepText : `${stepText}\n\n`;
     }
     toolCalls += calls.length;
     const results = await Promise.all(
@@ -170,11 +203,12 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
         } catch {
           /* label stays generic */
         }
-        o.onEvent({ type: 'tool_start', id: call.id, name: call.name, label, args });
+        o.onEvent({ type: 'tool_start', id: call.id, name: call.name, label: friendlyLabel(call.name, args, label), args });
         const started = Date.now();
         const r = await executeTool(tool, call, o.ctx, o.toolTimeoutMs);
         if (r.display) displays.push(r.display);
-        o.onEvent({ type: 'tool_end', id: call.id, name: call.name, ok: r.ok, summary: r.summary, display: r.display, durationMs: Date.now() - started });
+        if (!r.ok) failedTools.push(call.name);
+        o.onEvent({ type: 'tool_end', id: call.id, name: call.name, ok: r.ok, summary: friendlySummary(call.name, r.ok, r.summary), display: r.display, durationMs: Date.now() - started });
         return { call, r };
       }),
     );
@@ -183,5 +217,6 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
     }
     finishReason = 'tool_calls';
   }
-  return { text, steps, toolCalls, finishReason, inputTokens, outputTokens, displays, servedBy };
+  const reply = (kept + finalText).trim() || lastInterim.trim();
+  return { text, steps, toolCalls, finishReason, inputTokens, outputTokens, displays, servedBy, reply, failedTools };
 }
