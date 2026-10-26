@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { encrypt as sealToken, decrypt as openToken } from './vault.js';
 
 /**
  * Server-side agent state in one SQLite file (Node's built-in node:sqlite, no native build step):
@@ -140,6 +141,16 @@ export interface Connection {
   expiresAt: number;
   scope: string;
   email: string;
+}
+
+/** Rows saved before encryption hold the plain token; an unreadable sealed token reads as '' (reconnect). */
+function unsealToken(v: string): string {
+  if (!v.startsWith('v1:')) return v;
+  try {
+    return openToken(v);
+  } catch {
+    return '';
+  }
 }
 
 const SCHEMA = `
@@ -553,8 +564,9 @@ export class AgentStore {
       'INSERT INTO connections (owner, provider, access_token, refresh_token, expires_at, scope, email) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner, provider) DO UPDATE SET access_token = excluded.access_token, refresh_token = CASE WHEN excluded.refresh_token = \'\' THEN connections.refresh_token ELSE excluded.refresh_token END, expires_at = excluded.expires_at, scope = excluded.scope, email = excluded.email',
       c.owner,
       c.provider,
-      c.accessToken,
-      c.refreshToken,
+      // connected-app tokens are encrypted at rest with VAULT_KEY (same as the Secure Vault)
+      sealToken(c.accessToken),
+      sealToken(c.refreshToken),
       c.expiresAt,
       c.scope,
       c.email,
@@ -562,8 +574,10 @@ export class AgentStore {
   }
   getConnection(owner: string, provider: string): Connection | null {
     const r = this.get('SELECT * FROM connections WHERE owner = ? AND provider = ?', owner, provider);
+    // a token that can't be decrypted (VAULT_KEY changed) is no connection: the app shows Connect again
+    if (r && s(r.access_token) && !unsealToken(s(r.access_token))) return null;
     return r
-      ? { owner, provider, accessToken: s(r.access_token), refreshToken: s(r.refresh_token), expiresAt: n(r.expires_at), scope: s(r.scope), email: s(r.email) }
+      ? { owner, provider, accessToken: unsealToken(s(r.access_token)), refreshToken: unsealToken(s(r.refresh_token)), expiresAt: n(r.expires_at), scope: s(r.scope), email: s(r.email) }
       : null;
   }
   deleteConnection(owner: string, provider: string): boolean {
@@ -687,7 +701,7 @@ export class AgentStore {
       skills: this.listSkills(owner),
       vault: this.listVault(owner).map((v) => ({ id: v.id, name: v.name, domain: v.domain, note: 'login details are encrypted and not exported' })),
       inbox: this.listInbox(owner, 0, 10_000),
-      connections: ['google'].filter((p) => this.getConnection(owner, p)),
+      connections: ['google', 'github', 'notion', 'slack'].filter((p) => this.getConnection(owner, p)),
     };
   }
   /** Built-in apps this character has turned off (Apps page). */

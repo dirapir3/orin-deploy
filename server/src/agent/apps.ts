@@ -51,3 +51,17 @@ export function withoutOffApps<T extends Pick<ToolDef, 'name'>>(tools: T[], off:
 export function offAppsNotice(off: string[]): { name: string; needs: string }[] {
   return BUILT_IN_APPS.filter((a) => off.includes(a.id)).map((a) => ({ name: a.name, needs: 'the user to turn it back on for you on the Apps page (they turned it off)' }));
 }
+
+/**
+ * Whether a built-in app really works on this server: ready when at least one of its tools is usable,
+ * otherwise what it needs (from the tools' own `needs`). The Apps page shows this next to the app.
+ */
+export function builtInStatus(status: { name: string; live: boolean; needs: string | null }[]): Record<string, { ready: boolean; tools: number; needs: string | null }> {
+  const out: Record<string, { ready: boolean; tools: number; needs: string | null }> = {};
+  for (const a of BUILT_IN_APPS) {
+    const mine = status.filter((s) => appOfTool(s.name) === a.id);
+    const live = mine.filter((s) => s.live);
+    out[a.id] = { ready: live.length > 0, tools: live.length, needs: live.length ? null : (mine.find((s) => s.needs)?.needs ?? 'not available on this server') };
+  }
+  return out;
+}

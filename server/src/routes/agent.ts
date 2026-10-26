@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { Deps } from '../app.js';
 import { AppError } from '../errors.js';
@@ -9,6 +9,7 @@ import { capabilityReport } from '../agent/capabilities.js';
 import { computeNextRun } from '../agent/tools/tasks.js';
 import { isValidTimezone } from '../agent/cron.js';
 import { listConnectors, googleAuthUrl, googleConfigured } from '../agent/connectors.js';
+import { connectTokenApp, tokenApp, type TokenAppId } from '../agent/tokenApps.js';
 import { requestBaseUrl } from './agentChat.js';
 
 const owner = (req: Request) => agentOwnerKey(req);
@@ -237,15 +238,40 @@ export function agentRouter(deps: Deps): Router {
   });
 
   // ---- connectors
-  r.get('/connectors', (req, res) => res.json({ connectors: listConnectors(agent.services, st, owner(req)) }));
-  r.post('/connectors/google/start', (req, res) => {
-    if (!googleConfigured(agent.services)) throw new AppError('provider_not_configured', 'Google is not set up on the server. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.');
-    res.json({ url: googleAuthUrl(agent.services, owner(req), requestBaseUrl(req)) });
-  });
-  r.delete('/connectors/google', (req, res) => {
-    st.deleteConnection(owner(req), 'google');
-    res.json({ ok: true });
-  });
+  // the app calls /v1/agent/connectors/..., older clients and the docs /v1/connectors/...: both work
+  for (const base of ['/connectors', '/agent/connectors']) {
+    r.get(`${base}`, (req, res) => res.json({ connectors: listConnectors(agent.services, st, owner(req)) }));
+    // Google sign-in (Gmail, Calendar and Drive share one Google grant)
+    const googleStart = (req: Request, res: Response) => {
+      if (!googleConfigured(agent.services)) throw new AppError('provider_not_configured', 'Google is not set up on the server. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.');
+      res.json({ url: googleAuthUrl(agent.services, owner(req), requestBaseUrl(req)) });
+    };
+    r.post(`${base}/google/start`, googleStart);
+    r.post(`${base}/drive/start`, googleStart);
+    // token apps (GitHub, Notion, Slack): the token is checked with the provider, then saved encrypted
+    r.post(`${base}/:id/token`, async (req, res) => {
+      const id = String(req.params.id);
+      if (!tokenApp(id)) throw new AppError('not_found', 'That app does not connect with a token.');
+      const token = (req.body as { token?: unknown } | undefined)?.token;
+      if (typeof token !== 'string' || token.trim().length < 8 || token.length > 500 || /\s/.test(token.trim())) throw new AppError('validation_error', 'Paste the whole token (no spaces).');
+      let account: string;
+      try {
+        account = await connectTokenApp(agent.services, owner(req), id as TokenAppId, token);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new AppError('validation_error', `${tokenApp(id)!.name} did not accept that token. ${msg.includes('abort') ? 'It took too long to answer; try again.' : msg}`.trim());
+      }
+      res.json({ ok: true, id, account });
+    });
+    r.delete(`${base}/:id`, (req, res) => {
+      const id = String(req.params.id);
+      // Drive rides the Google grant: disconnecting it signs Google out (Gmail and Calendar too)
+      const provider = id === 'drive' ? 'google' : id;
+      if (provider !== 'google' && !tokenApp(provider)) throw new AppError('not_found', 'No such app.');
+      st.deleteConnection(owner(req), provider);
+      res.json({ ok: true });
+    });
+  }
 
   return r;
 }

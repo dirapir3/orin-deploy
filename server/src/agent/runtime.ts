@@ -31,6 +31,10 @@ export const CAPABILITY_NAMES: Record<string, string> = {
   browse: 'Full headless browser (Chromium; the lightweight browser_open/browser_submit tools work without it)',
   gmail_search: 'Gmail',
   calendar_list_events: 'Google Calendar',
+  drive_search: 'Google Drive',
+  github_list_repos: 'GitHub',
+  notion_search: 'Notion',
+  slack_list_channels: 'Slack',
   generate_image: 'Image generation',
 };
 

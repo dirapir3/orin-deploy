@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineTool, type AgentServices, type ToolDef } from './tools/types.js';
 import type { AgentStore } from './store.js';
+import { TOKEN_APPS, allTokenAppTools, tokenAppTools } from './tokenApps.js';
 
 /**
  * Connectors framework. Each connector declares what it needs, an OAuth flow and the tools it adds.
@@ -23,6 +24,11 @@ export interface ConnectorInfo {
   account: string | null;
   needs: string[];
   tools: string[];
+  /** how the user connects it: Google sign-in, or pasting a token */
+  connect: 'oauth' | 'token';
+  /** connected but the saved grant is missing something (e.g. Google signed in before Drive was added) */
+  note?: string;
+  token?: { label: string; help: string; url: string };
 }
 
 export const GOOGLE_SCOPES = [
@@ -31,7 +37,9 @@ export const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose',
   'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/drive.readonly',
 ];
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 
 export function googleRedirectUrl(svc: AgentServices, requestBase: string): string {
   return svc.config.integrations.google.redirectUrl || `${svc.config.agent.publicUrl || requestBase}/v1/connectors/google/callback`;
@@ -223,11 +231,59 @@ export const calendarCreateTool = defineTool({
   },
 });
 
-export const connectorTools: ToolDef[] = [gmailSearchTool, gmailReadTool, gmailDraftTool, gmailSendTool, calendarListTool, calendarCreateTool];
+const driveNeeds = ({ owner, services }: { owner: string; services: AgentServices }) => {
+  const g = googleNeeds({ owner, services });
+  if (g) return g;
+  if (!services.store.getConnection(owner, 'google')!.scope.includes(DRIVE_SCOPE)) return 'Reconnect Google on the Apps page to allow Drive';
+  return null;
+};
+
+export const driveSearchTool = defineTool({
+  name: 'drive_search',
+  description: "Find files in the user's Google Drive by name or text (Drive query is built for you). Returns name, type, id, link and last change.",
+  schema: z.object({ query: z.string().min(1).max(200), max: z.number().int().min(1).max(30).optional() }),
+  label: () => 'Searching Drive…',
+  needs: driveNeeds,
+  handler: async (a, ctx) => {
+    const term = a.query.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const p = new URLSearchParams({ q: `(name contains '${term}' or fullText contains '${term}') and trashed = false`, pageSize: String(a.max ?? 10), fields: 'files(id,name,mimeType,modifiedTime,webViewLink,size)', orderBy: 'modifiedTime desc' });
+    const r = await gapi<{ files?: { id: string; name: string; mimeType: string; modifiedTime: string; webViewLink?: string }[] }>(ctx.services, ctx.owner, `https://www.googleapis.com/drive/v3/files?${p.toString()}`, ctx.signal);
+    const rows = (r.files ?? []).map((f) => `- ${f.name} (${f.mimeType.replace('application/vnd.google-apps.', 'google ')}, id ${f.id}, changed ${f.modifiedTime.slice(0, 10)}) ${f.webViewLink ?? ''}`);
+    return { content: rows.join('\n') || 'No matching files.', summary: `${rows.length} files` };
+  },
+});
+
+export const driveReadTool = defineTool({
+  name: 'drive_read',
+  description: 'Read the text of a Google Drive file by id: Google Docs/Slides as text, Sheets as CSV (first sheet), and plain text, CSV, JSON or Markdown files.',
+  schema: z.object({ id: z.string().min(5).max(200) }),
+  label: () => 'Reading from Drive…',
+  needs: driveNeeds,
+  handler: async (a, ctx) => {
+    const id = encodeURIComponent(a.id);
+    const meta = await gapi<{ name: string; mimeType: string; size?: string }>(ctx.services, ctx.owner, `https://www.googleapis.com/drive/v3/files/${id}?fields=name,mimeType,size`, ctx.signal);
+    const exportAs: Record<string, string> = { 'application/vnd.google-apps.document': 'text/plain', 'application/vnd.google-apps.presentation': 'text/plain', 'application/vnd.google-apps.spreadsheet': 'text/csv' };
+    let url: string;
+    if (exportAs[meta.mimeType]) url = `https://www.googleapis.com/drive/v3/files/${id}/export?mimeType=${encodeURIComponent(exportAs[meta.mimeType]!)}`;
+    else if (/^text\/|json|csv|markdown|xml/.test(meta.mimeType)) url = `https://www.googleapis.com/drive/v3/files/${id}?alt=media`;
+    else return { content: `${meta.name} is a ${meta.mimeType} file; only Docs, Sheets, Slides and text files can be read as text.`, summary: 'Not a text file' };
+    const token = await googleToken(ctx.services, ctx.owner);
+    const res = await ctx.services.fetchImpl(url, { headers: { Authorization: `Bearer ${token}` }, signal: ctx.signal });
+    if (!res.ok) throw new Error(`Google Drive error HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const text = await res.text();
+    return { content: `${meta.name}:\n${text.length > 30_000 ? `${text.slice(0, 30_000)}…` : text}`, summary: `Read ${meta.name}` };
+  },
+});
+
+export const googleTools: ToolDef[] = [gmailSearchTool, gmailReadTool, gmailDraftTool, gmailSendTool, calendarListTool, calendarCreateTool];
+export const driveTools: ToolDef[] = [driveSearchTool, driveReadTool];
+export const connectorTools: ToolDef[] = [...googleTools, ...driveTools, ...allTokenAppTools];
 
 export function listConnectors(svc: AgentServices, store: AgentStore, owner: string): ConnectorInfo[] {
   const conn = store.getConnection(owner, 'google');
   const configured = googleConfigured(svc);
+  const googleNeedsList = configured ? [] : ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'PUBLIC_URL (or GOOGLE_REDIRECT_URL)'];
+  const driveOk = Boolean(conn?.scope.includes(DRIVE_SCOPE));
   return [
     {
       id: 'google',
@@ -236,8 +292,36 @@ export function listConnectors(svc: AgentServices, store: AgentStore, owner: str
       configured,
       connected: Boolean(conn),
       account: conn?.email || null,
-      needs: configured ? [] : ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'PUBLIC_URL (or GOOGLE_REDIRECT_URL)'],
-      tools: connectorTools.map((t) => t.name),
+      needs: googleNeedsList,
+      tools: googleTools.map((t) => t.name),
+      connect: 'oauth',
     },
+    {
+      id: 'drive',
+      name: 'Google Drive',
+      description: 'Find your Drive files and read Docs, Sheets, Slides and text files.',
+      configured,
+      connected: driveOk,
+      account: driveOk ? conn?.email || null : null,
+      needs: googleNeedsList,
+      tools: driveTools.map((t) => t.name),
+      connect: 'oauth',
+      ...(conn && !driveOk ? { note: 'Google is connected without Drive access. Connect again to allow Drive.' } : {}),
+    },
+    ...TOKEN_APPS.map((a): ConnectorInfo => {
+      const c = store.getConnection(owner, a.id);
+      return {
+        id: a.id,
+        name: a.name,
+        description: a.description,
+        configured: true,
+        connected: Boolean(c),
+        account: c?.email || null,
+        needs: [],
+        tools: tokenAppTools[a.id].map((t) => t.name),
+        connect: 'token',
+        token: { label: a.tokenLabel, help: a.tokenHelp, url: a.tokenUrl },
+      };
+    }),
   ];
 }

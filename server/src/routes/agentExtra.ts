@@ -1,5 +1,5 @@
 import express, { Router, type Request } from 'express';
-import { BUILT_IN_APPS, isBuiltInApp } from '../agent/apps.js';
+import { BUILT_IN_APPS, builtInStatus, isBuiltInApp } from '../agent/apps.js';
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { injectShim, siteFrame, sitesRoot } from '../agent/sites.js';
@@ -52,12 +52,8 @@ const AnswerBody = z.object({
 });
 const FileBody = z.object({ path: z.string().min(1).max(200), content: z.string().max(1_000_000) });
 
-/** Placeholder catalogue for apps that are not wired up yet, so the Apps page is honest about them. */
+/** Apps that are listed but have no tools behind them yet: shown as "Not available yet", never as installed. */
 const COMING_SOON = [
-  { id: 'drive', name: 'Google Drive', description: 'Find and read your Drive files.' },
-  { id: 'notion', name: 'Notion', description: 'Search and update your Notion pages.' },
-  { id: 'slack', name: 'Slack', description: 'Read and send Slack messages.' },
-  { id: 'github', name: 'GitHub', description: 'Issues, pull requests and repositories.' },
   { id: 'spotify', name: 'Spotify', description: 'Play music and manage playlists.' },
   { id: 'outlook', name: 'Outlook', description: 'Microsoft mail and calendar.' },
 ];
@@ -312,7 +308,16 @@ export function agentExtraRouter(deps: Deps): Router {
   // ---- apps catalogue (real + coming soon)
   r.get('/agent/apps', (req, res) => {
     const off = st.appsOff(owner(req));
-    res.json({ builtIn: BUILT_IN_APPS.map((a) => ({ id: a.id, name: a.name, what: a.what, enabled: !off.includes(a.id) })), apps: [...listConnectors(agent.services, st, owner(req)).map((c) => ({ ...c, status: c.connected ? 'connected' : c.configured ? 'available' : 'needs_setup' })), ...COMING_SOON.map((c) => ({ ...c, configured: false, connected: false, account: null, needs: [], tools: [], status: 'coming_soon' }))] });
+    // every entry says honestly what it is: connected (tools usable now), available (can be connected now),
+    // needs_setup (the server owner must add keys first) or coming_soon (no tools behind it yet)
+    const ready = builtInStatus(agent.tools.status(owner(req), agent.services));
+    res.json({
+      builtIn: BUILT_IN_APPS.map((a) => ({ id: a.id, name: a.name, what: a.what, enabled: !off.includes(a.id), ready: ready[a.id]!.ready, tools: ready[a.id]!.tools, needs: ready[a.id]!.needs })),
+      apps: [
+        ...listConnectors(agent.services, st, owner(req)).map((c) => ({ ...c, status: c.connected ? 'connected' : c.configured ? 'available' : 'needs_setup' })),
+        ...COMING_SOON.map((c) => ({ ...c, configured: false, connected: false, account: null, needs: [], tools: [], connect: null, status: 'coming_soon' })),
+      ],
+    });
   });
 
   // turn a built-in app on or off for this character (its tools stop being offered everywhere)
