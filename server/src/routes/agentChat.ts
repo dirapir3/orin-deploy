@@ -10,6 +10,8 @@ import { buildAgentContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { isValidTimezone } from '../agent/cron.js';
 import { chatRuns } from '../agent/chatRuns.js';
+import { buildWorkContext } from '../agent/workContext.js';
+import { offAppsNotice, withoutOffApps } from '../agent/apps.js';
 
 /** A chat reply keeps working on the server when the app goes away, but not forever. */
 const DETACHED_RUN_MS = 50 * 60_000;
@@ -43,7 +45,19 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   const limit = setTimeout(() => controller.abort(), DETACHED_RUN_MS);
   limit.unref?.();
   const character = agentIdOf(req);
-  const tools = agent.tools.available(owner, agent.services, { incognito });
+  run.topic = [...body.messages].reverse().find((m) => m.role === 'user')?.content.slice(0, 160) ?? '';
+  // One work picture for text and voice: running/recent tasks, other replies still working, cards waiting.
+  let work: string | undefined;
+  if (!incognito) {
+    try {
+      work = buildWorkContext(agent.store, owner, { conversationId, mode: body.mode === 'voice' ? 'voice' : 'chat', replies: chatRuns.listActive(owner, run.id) });
+    } catch {
+      work = undefined;
+    }
+  }
+  // apps the user turned off for this character on the Apps page are not offered (chat and calls)
+  const appsOff = agent.store.appsOff(owner);
+  const tools = withoutOffApps(agent.tools.available(owner, agent.services, { incognito }), appsOff);
   // Fails fast (before streaming) on images the model cannot read, etc.
   let ctx: Awaited<ReturnType<typeof buildAgentContext>>;
   try {
@@ -52,7 +66,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       owner,
       provider,
       signal: controller.signal,
-      persona: { timezone, tools: tools.map((t: { name: string }) => t.name), unavailable: agent.unavailable(owner), character, incognito },
+      persona: { timezone, tools: tools.map((t: { name: string }) => t.name), unavailable: [...agent.unavailable(owner), ...offAppsNotice(appsOff)], character, incognito, work },
     });
   } catch (err) {
     clearTimeout(limit);
@@ -108,8 +122,10 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
           chars += ev.text.length;
           sse(res, 'delta', { text: ev.text });
         } else if (ev.type === 'interim') sse(res, 'interim', { text: ev.text });
-        else if (ev.type === 'tool_start') sse(res, 'tool', { phase: 'start', id: ev.id, name: ev.name, label: ev.label });
-        else if (ev.type === 'served') {
+        else if (ev.type === 'tool_start') {
+          run.step = ev.label || ev.name;
+          sse(res, 'tool', { phase: 'start', id: ev.id, name: ev.name, label: ev.label });
+        } else if (ev.type === 'served') {
           served = { provider: ev.provider, model: ev.model };
           sse(res, 'served', served);
         } else if (ev.type === 'tool_end') sse(res, 'tool', { phase: 'end', id: ev.id, name: ev.name, ok: ev.ok, summary: ev.summary, display: ev.display, durationMs: ev.durationMs });

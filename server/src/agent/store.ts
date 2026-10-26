@@ -164,6 +164,7 @@ CREATE TABLE IF NOT EXISTS prompts (id TEXT PRIMARY KEY, owner TEXT NOT NULL, ki
 CREATE INDEX IF NOT EXISTS prompts_owner ON prompts(owner, status, created_at);
 CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, owner TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, ref_id TEXT, created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS inbox_owner ON inbox(owner, created_at);
+CREATE TABLE IF NOT EXISTS app_prefs (owner TEXT NOT NULL, app TEXT NOT NULL, enabled INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (owner, app));
 CREATE TABLE IF NOT EXISTS usage_daily (owner TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (owner, day, kind));
 `;
 
@@ -689,9 +690,18 @@ export class AgentStore {
       connections: ['google'].filter((p) => this.getConnection(owner, p)),
     };
   }
+  /** Built-in apps this character has turned off (Apps page). */
+  appsOff(owner: string): string[] {
+    return this.all('SELECT app FROM app_prefs WHERE owner = ? AND enabled = 0 ORDER BY app', owner).map((r) => s(r.app));
+  }
+
+  setAppEnabled(owner: string, app: string, enabled: boolean): void {
+    this.run('INSERT INTO app_prefs (owner, app, enabled, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(owner, app) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at', owner, app, enabled ? 1 : 0, Date.now());
+  }
+
   deleteOwner(owner: string): number {
     let total = 0;
-    for (const t of ['memories', 'notes', 'reminders', 'tasks', 'schedules', 'skills', 'summaries', 'connections', 'oauth_states', 'vault', 'prompts', 'inbox', 'usage_daily']) {
+    for (const t of ['memories', 'notes', 'reminders', 'tasks', 'schedules', 'skills', 'summaries', 'connections', 'oauth_states', 'vault', 'prompts', 'inbox', 'usage_daily', 'app_prefs']) {
       total += this.run(`DELETE FROM ${t} WHERE owner = ?`, owner);
     }
     return total;

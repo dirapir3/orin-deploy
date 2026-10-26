@@ -33,6 +33,8 @@ export interface PersonaOptions {
   /** capabilities that exist but are not set up, so the model can say so honestly */
   unavailable?: { name: string; needs: string }[];
   inTask?: boolean;
+  /** shared work picture for chat and voice (agent/workContext.ts) */
+  work?: string;
 }
 
 /** The user's wall-clock time as ISO 8601 with their offset, e.g. 2026-10-25T08:45:00-07:00. */
@@ -136,6 +138,7 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
       ...o.unavailable.map((u) => `- ${u.name}: needs ${u.needs}`),
     );
   }
+  if (o.work && mode !== 'task') lines.push('', o.work);
   const lessons = (o.memories ?? []).filter((m) => isLesson(m.tags));
   const facts = (o.memories ?? []).filter((m) => !isLesson(m.tags));
   if (lessons.length) lines.push('', '## What you have learned from your own past work (apply these every time)', ...lessons.map((m) => `- ${m.text}`));

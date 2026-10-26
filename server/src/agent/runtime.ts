@@ -1,4 +1,5 @@
 import { join, resolve } from 'node:path';
+import { offAppsNotice, withoutOffApps } from './apps.js';
 import type { AppConfig } from '../config.js';
 import type { FetchLike } from '../ai/http.js';
 import type { ChatProvider, ProviderMessage } from '../ai/types.js';
@@ -340,10 +341,11 @@ export class AgentRuntime {
 
   private async runAgentTask(task: Task, prompt: string, tz: string | undefined, signal: AbortSignal): Promise<{ text: string; handedOff: boolean }> {
     const provider = this.providerFor(task.owner)!;
-    const tools = this.tools.available(task.owner, this.services, { inTask: true });
+    const appsOff = this.store.appsOff(task.owner);
+    const tools = withoutOffApps(this.tools.available(task.owner, this.services, { inTask: true }), appsOff);
     const recentMem = this.store.listMemories(task.owner, 20);
     const memories = [...recentMem, ...this.store.listLessons(task.owner).filter((l) => !recentMem.some((m) => m.id === l.id))];
-    const system = buildAgentSystemPrompt(undefined, 'task', { character: task.owner.includes('#') ? task.owner.split('#')[1] : 'orin', timezone: tz, memories, tools: tools.map((t) => t.name), unavailable: this.unavailable(task.owner), inTask: true });
+    const system = buildAgentSystemPrompt(undefined, 'task', { character: task.owner.includes('#') ? task.owner.split('#')[1] : 'orin', timezone: tz, memories, tools: tools.map((t) => t.name), unavailable: [...this.unavailable(task.owner), ...offAppsNotice(appsOff)], inTask: true });
     const resume = Array.isArray(task.input.resume) ? (task.input.resume as ProviderMessage[]) : null;
     // A checkpoint means a server restart interrupted this task mid-way: carry on from it, a few times at most.
     const restarts = task.input.checkpoint ? (typeof task.input.restarts === 'number' ? task.input.restarts : 0) + 1 : 0;

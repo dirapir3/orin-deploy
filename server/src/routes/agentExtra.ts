@@ -1,4 +1,5 @@
 import express, { Router, type Request } from 'express';
+import { BUILT_IN_APPS, isBuiltInApp } from '../agent/apps.js';
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { injectShim, siteFrame, sitesRoot } from '../agent/sites.js';
@@ -308,7 +309,18 @@ export function agentExtraRouter(deps: Deps): Router {
 
   // ---- apps catalogue (real + coming soon)
   r.get('/agent/apps', (req, res) => {
-    res.json({ apps: [...listConnectors(agent.services, st, owner(req)).map((c) => ({ ...c, status: c.connected ? 'connected' : c.configured ? 'available' : 'needs_setup' })), ...COMING_SOON.map((c) => ({ ...c, configured: false, connected: false, account: null, needs: [], tools: [], status: 'coming_soon' }))] });
+    const off = st.appsOff(owner(req));
+    res.json({ builtIn: BUILT_IN_APPS.map((a) => ({ id: a.id, name: a.name, what: a.what, enabled: !off.includes(a.id) })), apps: [...listConnectors(agent.services, st, owner(req)).map((c) => ({ ...c, status: c.connected ? 'connected' : c.configured ? 'available' : 'needs_setup' })), ...COMING_SOON.map((c) => ({ ...c, configured: false, connected: false, account: null, needs: [], tools: [], status: 'coming_soon' }))] });
+  });
+
+  // turn a built-in app on or off for this character (its tools stop being offered everywhere)
+  r.patch('/agent/apps/:id', (req, res) => {
+    const id = String(req.params.id);
+    const enabled = (req.body as { enabled?: unknown } | undefined)?.enabled;
+    if (!isBuiltInApp(id)) return void res.status(404).json({ error: { message: 'No such built-in app' } });
+    if (typeof enabled !== 'boolean') return void res.status(400).json({ error: { message: 'enabled must be true or false' } });
+    st.setAppEnabled(owner(req), id, enabled);
+    res.json({ ok: true, id, enabled });
   });
 
   // ---- usage

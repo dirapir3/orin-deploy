@@ -24,6 +24,9 @@ export class ChatRun {
   finishedAt = 0;
   /** true once a client has dropped off at least once */
   everDetached = false;
+  /** what the user asked (short), and the step it is on: for the shared work picture */
+  topic = '';
+  step: string | null = null;
   private subs = new Set<(e: RunEvent | null) => void>();
 
   constructor(
@@ -96,6 +99,13 @@ export class ChatRunRegistry {
     let n = 0;
     for (const r of this.runs.values()) if (!r.done && r.owner === owner) n++;
     return n;
+  }
+
+  /** Replies still working for this owner, other than `except` (workContext.ts). */
+  listActive(owner: string, except?: string): { conversationId: string | null; topic: string; startedAt: number; step: string | null }[] {
+    const out: { conversationId: string | null; topic: string; startedAt: number; step: string | null }[] = [];
+    for (const r of this.runs.values()) if (!r.done && r.owner === owner && r.id !== except) out.push({ conversationId: r.conversationId, topic: r.topic || 'a request', startedAt: r.createdAt, step: r.step });
+    return out;
   }
 
   anyActive(): boolean {
