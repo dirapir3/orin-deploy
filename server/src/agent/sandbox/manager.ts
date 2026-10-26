@@ -234,7 +234,7 @@ export class SandboxManager {
   /** True while a sandbox_job is still running (its .exit file is not written yet). */
   private async jobRunning(e: Entry): Promise<boolean> {
     try {
-      const r = await e.session.exec('for f in $HOME/.orin/jobs/*.pid; do [ -e "$f" ] || continue; [ -e "${f%.pid}.exit" ] || { echo running; break; }; done', { cwd: '/', timeoutMs: 20_000 });
+      const r = await e.session.exec('for f in /home/user/.orin/jobs/*.pid; do [ -e "$f" ] || continue; [ -e "${f%.pid}.exit" ] || { echo running; break; }; done', { cwd: '/', timeoutMs: 20_000 });
       return r.stdout.includes('running');
     } catch {
       return false;

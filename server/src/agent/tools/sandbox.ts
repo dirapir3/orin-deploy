@@ -3,7 +3,7 @@ import { commandRisk } from '../risk.js';
 import { defineTool, type AgentServices, type ToolContext } from './types.js';
 import { SANDBOX_WORKDIR, sandboxPath, shq, type ExecResult, type SandboxSession } from '../sandbox/index.js';
 import { copyToWorkspace, listRemote, SAVE_MAX_FILE, SAVE_PREFIX } from '../sandbox/persist.js';
-import { workspaceDir, writeWsFile } from '../workspace.js';
+import { MAX_FILE_BYTES, workspaceDir, writeBigFile, writeWsFile } from '../workspace.js';
 import { redactSecrets, resolveSecrets, secretsSchema, type SecretRefs } from '../sandbox/secrets.js';
 
 /**
@@ -166,7 +166,7 @@ export const sandboxSaveTool = defineTool({
     "Copy a file or folder from your sandbox computer into the user's own files on Orin's server, where they stay after the sandbox closes and the user can open them. " +
     'To publish a site you built in the sandbox: build it, sandbox_save the folder with index.html (e.g. dist) to "sites/<name>", then call publish_site with that folder. ' +
     'To send the user a file you made (a PDF, an image, a document, an APK), save that one file: a file card appears in the chat that they tap to open or download. ' +
-    'For folders, node_modules, .git, build folders and caches are skipped, and files over 2 MB; up to 20 MB per folder save. A single file can be up to 60 MB (files over 20 MB are lost if the server restarts).',
+    'For folders, node_modules, .git, build folders and caches are skipped, and files over 2 MB; up to 20 MB per folder save. A single file can be up to 60 MB; one over 1 MB (an APK, a video) is saved under downloads/ and appears in chat for the user to download (files over 20 MB are lost if the server restarts).',
   schema: z.object({
     path: z.string().min(1).max(300).describe(`File or folder in the sandbox; relative paths are inside ${SANDBOX_WORKDIR}`),
     to: z.string().min(1).max(200).describe('Destination folder in the user\'s files, e.g. "sites/portfolio" or "projects/report"'),
@@ -185,18 +185,20 @@ export const sandboxSaveTool = defineTool({
       const name = p.split('/').pop()!;
       const data = await s.readFile(p);
       if (data.byteLength > SINGLE_MAX_FILE) return { saved: [], skipped: [`${name} (over ${SINGLE_MAX_FILE / 1_000_000} MB)`], bytes: 0 };
-      writeWsFile(workspaceDir(ctx.services, ctx.owner), `${to}/${name}`, Buffer.from(data));
-      return { saved: [name], skipped: [], bytes: data.byteLength };
+      const root = workspaceDir(ctx.services, ctx.owner);
+      // Small files go where asked; a big one (an APK, a video) goes to downloads/, outside the 20 MB quota.
+      const f = data.byteLength > MAX_FILE_BYTES ? writeBigFile(root, name, Buffer.from(data)) : writeWsFile(root, `${to}/${name}`, Buffer.from(data));
+      return { saved: [f.path], skipped: [], bytes: data.byteLength, single: true };
     });
     const ok = rep.saved.length > 0;
     log(ctx, 'save', ok ? `Saved ${rep.saved.length} file${rep.saved.length === 1 ? '' : 's'} to ${to}/` : `Nothing saved from ${p}`, ok);
     return {
       ok,
       content: ok
-        ? `Saved ${rep.saved.length} file${rep.saved.length === 1 ? '' : 's'} (${rep.bytes} bytes) to the user's files under ${to}/:\n${rep.saved.slice(0, 60).map((f) => `${to}/${f}`).join('\n')}${rep.skipped.length ? `\n\nSkipped: ${rep.skipped.slice(0, 20).join('; ')}` : ''}`
+        ? `Saved ${rep.saved.length} file${rep.saved.length === 1 ? '' : 's'} (${rep.bytes} bytes) to the user's files${'single' in rep ? '' : ` under ${to}/`}:\n${rep.saved.slice(0, 60).map((f) => ('single' in rep ? f : `${to}/${f}`)).join('\n')}${rep.skipped.length ? `\n\nSkipped: ${rep.skipped.slice(0, 20).join('; ')}` : ''}`
         : `Nothing was saved from ${p}.${rep.skipped.length ? ` Skipped: ${rep.skipped.slice(0, 20).join('; ')}` : ' The folder is empty.'}`,
       summary: ok ? `Saved ${rep.saved.length} file${rep.saved.length === 1 ? '' : 's'}` : 'Nothing saved',
-      display: ok ? { kind: 'file', path: `${to}/${rep.saved.length === 1 ? rep.saved[0] : ''}`.replace(/\/$/, ''), size: rep.bytes } : undefined,
+      display: ok ? { kind: 'file', path: 'single' in rep ? rep.saved[0]! : `${to}/${rep.saved.length === 1 ? rep.saved[0] : ''}`.replace(/\/$/, ''), size: rep.bytes } : undefined,
     };
   },
 });

@@ -95,7 +95,7 @@ export async function copyToWorkspace(
     }
     try {
       const data = await s.readFile(`${from}/${f.path}`);
-      writeWsFile(root, to ? `${to}/${f.path}` : f.path, Buffer.from(data));
+      writeWsFile(root, to ? `${to}/${f.path}` : f.path, Buffer.from(data), { maxFileBytes: SAVE_MAX_FILE });
       rep.saved.push(f.path);
       rep.bytes += data.byteLength;
       if (o.onlyChanged) base.set(f.path, f.mtime);

@@ -13,6 +13,10 @@ import type { AgentServices } from './tools/types.js';
  */
 export const MAX_FILE_BYTES = 1_000_000;
 export const MAX_WORKSPACE_BYTES = 20_000_000;
+/** Big single files Orin hands the user (an APK, a video) live in downloads/, outside the 20 MB quota. */
+export const BIG_DIR = 'downloads';
+export const MAX_BIG_FILE_BYTES = 60_000_000;
+export const MAX_BIG_TOTAL_BYTES = 100_000_000;
 
 export function workspaceRoot(svc: AgentServices): string {
   const d = svc.config.agent.dataDir;
@@ -59,19 +63,43 @@ export function listFiles(root: string): WsFile[] {
   return out.sort((a, b) => b.modifiedAt - a.modifiedAt);
 }
 
+/** Bytes counted against the 20 MB quota (big downloads/ files have their own limit). */
 export function usedBytes(root: string): number {
-  return listFiles(root).reduce((n, f) => n + f.size, 0);
+  return listFiles(root).reduce((n, f) => (f.path.startsWith(`${BIG_DIR}/`) ? n : n + f.size), 0);
 }
 
-export function writeWsFile(root: string, rel: string, content: string | Buffer): WsFile {
+export function writeWsFile(root: string, rel: string, content: string | Buffer, o: { maxFileBytes?: number } = {}): WsFile {
   const abs = safePath(root, rel);
   const buf = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
-  if (buf.length > MAX_FILE_BYTES) throw new Error(`Files can be at most ${MAX_FILE_BYTES / 1_000_000} MB.`);
+  const max = o.maxFileBytes ?? MAX_FILE_BYTES;
+  if (buf.length > max) throw new Error(`Files can be at most ${max / 1_000_000} MB.`);
   const existing = existsSync(abs) ? statSync(abs).size : 0;
   if (usedBytes(root) - existing + buf.length > MAX_WORKSPACE_BYTES) throw new Error('Your workspace is full (20 MB). Delete some files first.');
   mkdirSync(dirname(abs), { recursive: true });
   writeFileSync(abs, buf);
   return { path: relative(root, abs).split(sep).join('/'), size: buf.length, modifiedAt: Date.now() };
+}
+
+/**
+ * Saves one big file (up to 60 MB) under downloads/, removing the oldest downloads first when they
+ * would pass 100 MB together. Not counted in the 20 MB quota.
+ */
+export function writeBigFile(root: string, name: string, buf: Buffer): WsFile {
+  if (buf.length > MAX_BIG_FILE_BYTES) throw new Error(`A single file can be at most ${MAX_BIG_FILE_BYTES / 1_000_000} MB.`);
+  const rel = `${BIG_DIR}/${name.replace(/[\\/]/g, '_')}`;
+  const abs = safePath(root, rel);
+  const big = listFiles(root)
+    .filter((f) => f.path.startsWith(`${BIG_DIR}/`) && f.path !== rel)
+    .sort((a, b) => a.modifiedAt - b.modifiedAt);
+  let total = big.reduce((n, f) => n + f.size, 0);
+  while (big.length && total + buf.length > MAX_BIG_TOTAL_BYTES) {
+    const old = big.shift()!;
+    rmSync(safePath(root, old.path), { force: true });
+    total -= old.size;
+  }
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, buf);
+  return { path: rel, size: buf.length, modifiedAt: Date.now() };
 }
 
 export function readWsFile(root: string, rel: string): Buffer {

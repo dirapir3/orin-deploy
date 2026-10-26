@@ -110,7 +110,7 @@ export const sandboxJobTool = defineTool({
     const r = hide(
       ctx.owner,
       await withSandbox(ctx, (s) =>
-        s.exec(`cd ${JOBS} 2>/dev/null || exit 3; j=${id}; [ -e $j.cmd ] || exit 4; echo "JOB $j"; if [ -e $j.exit ]; then echo "STATE finished, exit code $(cat $j.exit)"; else echo "STATE running for $(( ($(date +%s) - $(stat -c %Y $j.cmd)) / 60 )) min"; fi; echo "LOG ${JOBS}/$j.log ($(wc -l < $j.log 2>/dev/null || echo 0) lines)"; echo ---; tail -n ${n} $j.log 2>/dev/null | cut -c1-400`, { cwd: '/', timeoutMs: 30_000 }),
+        s.exec(`cd ${JOBS} 2>/dev/null || exit 3; j=${id}; [ -e $j.cmd ] || exit 4; echo "JOB $j"; if [ -e $j.exit ]; then echo "STATE finished, exit code $(cat $j.exit)"; else echo "STATE running for $(( ($(date +%s) - $(stat -c %Y $j.pid 2>/dev/null || stat -c %Y $j.cmd)) / 60 )) min"; fi; echo "LOG ${JOBS}/$j.log ($(wc -l < $j.log 2>/dev/null || echo 0) lines)"; echo ---; tail -n ${n} $j.log 2>/dev/null | cut -c1-400`, { cwd: '/', timeoutMs: 30_000 }),
       ),
     );
     if (r.exitCode !== 0) return { ok: false, content: 'No such job on this computer. Jobs from an earlier computer are gone (it lives about an hour); start it again.', summary: 'No such job' };
