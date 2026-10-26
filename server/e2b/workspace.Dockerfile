@@ -1,6 +1,6 @@
 # Orin's computer: the E2B sandbox template "orin-workspace".
 # Built with the admin API (POST /admin/app/api/e2b/template/build) using the server's E2B key.
-# Ubuntu 24.04 + Node LTS (npm/yarn/pnpm), Expo + EAS CLI, JDK 17, Android SDK/NDK, Python 3,
+# Ubuntu 24.04 + Node LTS (npm/yarn/pnpm), Expo + EAS CLI, Capacitor CLI, JDK 17 (+ JDK 21 for Capacitor), Android SDK/NDK, Python 3,
 # Chromium + Playwright with a live view (Xvfb + noVNC), and file tools (PDF, images, office, media, zip).
 FROM ubuntu:24.04
 USER root
@@ -101,6 +101,19 @@ RUN printf '%s\n' \
 # Helper for Orin: build an Expo app's Android APK sized for this machine (adds swap if it can).
 # (the build script swaps in the base64 of e2b/orin-android-build; see tools/e2b_tpl_build.sh)
 RUN echo '__ORIN_ANDROID_BUILD_B64__' | base64 -d > /usr/local/bin/orin-android-build && chmod 755 /usr/local/bin/orin-android-build
+
+# Capacitor (web app -> Android APK) beside Expo. Capacitor 8 builds need JDK 21; Expo keeps JDK 17, which
+# stays the default java and JAVA_HOME. orin-capacitor-build switches to JDK 21 for its own Gradle run only.
+# (the build script swaps in the base64 of e2b/orin-capacitor-build; see tools/e2b_tpl_build.sh)
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-21-jdk-headless && rm -rf /var/lib/apt/lists/* \
+ && update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java \
+ && update-alternatives --set javac /usr/lib/jvm/java-17-openjdk-amd64/bin/javac \
+ && java -version 2>&1 | head -1 && /usr/lib/jvm/java-21-openjdk-amd64/bin/java -version 2>&1 | head -1 \
+ && npm i -g @capacitor/cli@8 && npm cache clean --force && chmod -R a+rwX /opt/npm-global \
+ && ln -sf /opt/npm-global/bin/cap /usr/local/bin/cap \
+ && echo 'export JAVA21_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> /etc/profile.d/00-orin-env.sh \
+ && echo 'JAVA21_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> /etc/environment
+RUN echo '__ORIN_CAPACITOR_BUILD_B64__' | base64 -d > /usr/local/bin/orin-capacitor-build && chmod 755 /usr/local/bin/orin-capacitor-build
 
 # Commands run as the last USER. Orin's server expects the normal E2B user "user" (home /home/user, work
 # folder /home/user/work) with sudo and no password, as on E2B's standard machine.

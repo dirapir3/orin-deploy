@@ -25,6 +25,11 @@ if [ ! -d node_modules ]; then
   if [ -f pnpm-lock.yaml ]; then pnpm install; elif [ -f yarn.lock ]; then yarn install --frozen-lockfile || yarn install; else npm install --no-audit --no-fund; fi || exit 1
 fi
 if [ ! -d android ]; then
+  # Without android.package, expo prebuild stops to ask a question it cannot ask here: give it one.
+  if [ -f app.json ]; then node -e '
+const fs=require("fs");const j=JSON.parse(fs.readFileSync("app.json","utf8"));const e=j.expo||j;e.android=e.android||{};
+if(!e.android.package){const s=String(e.slug||e.name||"app").toLowerCase().replace(/[^a-z0-9]/g,"").replace(/^[0-9]+/,"")||"app";
+e.android.package="com.orin."+s;fs.writeFileSync("app.json",JSON.stringify(j,null,2)+"\n");console.log("Set android.package to "+e.android.package);}' || true; fi
   echo "== expo prebuild (android)"
   npx expo prebuild -p android --no-install || exit 1
 fi

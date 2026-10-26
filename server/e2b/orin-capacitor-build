@@ -1,0 +1,89 @@
+#!/bin/bash
+# orin-capacitor-build [project-dir] [--name "App Name"] [--id com.example.app] [--debug]
+# Turns a web app (plain HTML/CSS/JS folder, or a Vite/React/Vue/Svelte/Next static-export project) into an
+# Android APK with Capacitor 8 on Orin's computer. Steps: build the web app if it has a build script, find the
+# folder with index.html (dist, build, www, out, public), add Capacitor + the Android platform, sync, then
+# run Gradle with JDK 21 and one worker. Prints the APK path and size at the end.
+# A plain folder without package.json is copied into <folder>-android/www and wrapped there.
+# Release builds are signed with the debug key (fine for installing on a phone, not for the Play Store).
+set -o pipefail
+. /etc/profile.d/00-orin-env.sh 2>/dev/null
+DIR=.; VARIANT=Release; NAME=; APPID=
+while [ $# -gt 0 ]; do case "$1" in
+  --debug) VARIANT=Debug ;; --name) NAME="$2"; shift ;; --id) APPID="$2"; shift ;;
+  -h|--help) sed -n 2,8p "$0"; exit 0 ;; *) DIR="$1" ;; esac; shift; done
+CAP_VER="${ORIN_CAPACITOR_VERSION:-8}"
+J21=/usr/lib/jvm/java-21-openjdk-amd64
+[ -x "$J21/bin/java" ] || J21=$(ls -d /usr/lib/jvm/java-2[1-9]-openjdk-* 2>/dev/null | head -1)
+if [ -z "$J21" ] || [ ! -x "$J21/bin/java" ]; then
+  echo "== Installing JDK 21 (Capacitor 8 needs it)"
+  sudo -n apt-get update -qq >/dev/null && sudo -n apt-get install -y -qq openjdk-21-jdk-headless >/dev/null || { echo "Could not install JDK 21"; exit 1; }
+  sudo -n update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java >/dev/null 2>&1
+  sudo -n update-alternatives --set javac /usr/lib/jvm/java-17-openjdk-amd64/bin/javac >/dev/null 2>&1
+  J21=/usr/lib/jvm/java-21-openjdk-amd64
+fi
+cd "$DIR" || { echo "No such folder: $DIR"; exit 1; }
+SRC=$(pwd)
+export CI=1 NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1536}"
+slug() { echo "$1" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9]//g; s/^[0-9]*//' | cut -c1-30; }
+
+if [ ! -f package.json ]; then
+  [ -f index.html ] || { echo "No package.json or index.html in $SRC"; exit 1; }
+  W="${SRC%/}-android"; echo "== Plain web folder: wrapping it in $W"
+  mkdir -p "$W/www" && rsync -a --delete --exclude node_modules --exclude .git --exclude android "$SRC/" "$W/www/" || exit 1
+  cd "$W" || exit 1
+  [ -f package.json ] || printf '{\n  "name": "%s",\n  "version": "1.0.0",\n  "private": true\n}\n' "$(s=$(slug "$(basename "$SRC")"); echo "${s:-webapp}")" > package.json
+  [ -n "$NAME" ] || NAME=$(basename "$SRC")
+fi
+
+has_dep() { node -e "const p=require('./package.json');process.exit(((p.dependencies||{})['$1']||(p.devDependencies||{})['$1'])?0:1)"; }
+if [ ! -d node_modules ] && grep -q '"dependencies"\|"devDependencies"' package.json; then
+  echo "== Installing packages"
+  if [ -f pnpm-lock.yaml ]; then pnpm install; elif [ -f yarn.lock ]; then yarn install --frozen-lockfile || yarn install; else npm install --no-audit --no-fund; fi || exit 1
+fi
+need=""; for d in @capacitor/core @capacitor/android; do has_dep $d || need="$need $d@^$CAP_VER"; done
+has_dep @capacitor/cli || need="$need @capacitor/cli@^$CAP_VER"
+if [ -n "$need" ]; then echo "== Adding Capacitor:$need"; npm install --no-audit --no-fund $need || exit 1; fi
+
+if node -e "process.exit(require('./package.json').scripts?.build?0:1)" && [ -z "$ORIN_SKIP_WEB_BUILD" ]; then
+  echo "== Building the web app (npm run build)"; npm run build || exit 1
+fi
+
+CFG=$(ls capacitor.config.ts capacitor.config.json capacitor.config.js 2>/dev/null | head -1)
+if [ -z "$CFG" ]; then
+  WEB=""; for d in dist build www out public; do [ -f "$d/index.html" ] && { WEB=$d; break; }; done
+  [ -n "$WEB" ] || { echo "Could not find the built web folder (dist, build, www, out or public with index.html)"; exit 1; }
+  [ -n "$NAME" ] || NAME=$(node -e "console.log(require('./package.json').name||'')"); [ -n "$NAME" ] || NAME=$(basename "$(pwd)")
+  [ -n "$APPID" ] || { s=$(slug "$NAME"); APPID="com.orin.${s:-app}"; }
+  echo "== Capacitor init: \"$NAME\" ($APPID), web folder $WEB"
+  npx cap init "$NAME" "$APPID" --web-dir "$WEB" || exit 1
+fi
+[ -d android ] || { echo "== Adding the Android platform"; npx cap add android || exit 1; }
+echo "== Copying the web app into Android (cap sync)"
+npx cap sync android || exit 1
+
+G=android/app/build.gradle
+if [ "$VARIANT" = Release ] && [ -f "$G" ] && ! grep -q 'orin: debug-key signing' "$G"; then
+  python3 - "$G" <<'EOF'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s2 = re.sub(r'(buildTypes\s*\{\s*release\s*\{)', r'\1\n            signingConfig signingConfigs.debug // orin: debug-key signing', s, count=1)
+open(p, 'w').write(s2)
+print('Release build will be signed with the debug key' if s2 != s else 'Could not add signing; the release APK will be unsigned')
+EOF
+fi
+
+cd android || exit 1
+chmod +x gradlew
+export JAVA_HOME="$J21" PATH="$J21/bin:$PATH"
+echo "== Gradle assemble$VARIANT with $(java -version 2>&1 | head -1) (one worker; first build takes a few minutes)"
+SECONDS=0
+./gradlew "assemble$VARIANT" --no-daemon --max-workers=1 --console=plain 2>&1 | tee /tmp/orin-gradle.log | grep -E --line-buffered '^> Task|BUILD|FAILURE|error:|What went wrong' | grep -v --line-buffered -E 'UP-TO-DATE|NO-SOURCE|SKIPPED'
+rc=${PIPESTATUS[0]}
+v=$(echo "$VARIANT" | tr A-Z a-z)
+apk=$(ls -1 app/build/outputs/apk/$v/*.apk 2>/dev/null | head -1)
+if [ "$rc" = 0 ] && [ -n "$apk" ]; then
+  echo "BUILD OK in ${SECONDS}s"; echo "APK: $(readlink -f "$apk") ($(du -h "$apk" | cut -f1))"
+else
+  echo "BUILD FAILED (exit $rc) after ${SECONDS}s. Last lines of /tmp/orin-gradle.log:"; tail -40 /tmp/orin-gradle.log; exit 1
+fi
