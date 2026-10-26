@@ -9,7 +9,7 @@ import { agentOwnerKey, agentOwners, requesterKey } from '../middleware/auth.js'
 import { parseBody } from './util.js';
 import { CHARACTERS } from '../agent/persona.js';
 import { saveLogin, toPublic, updateLogin, signToken } from '../agent/vault.js';
-import { deleteWsFile, listFiles, MAX_WORKSPACE_BYTES, wipeWorkspace, workspaceDir, writeWsFile } from '../agent/workspace.js';
+import { deleteWsFile, listFiles, MAX_WORKSPACE_BYTES, usedBytes, wipeWorkspace, workspaceDir, writeWsFile } from '../agent/workspace.js';
 import { listConnectors } from '../agent/connectors.js';
 import { requestBaseUrl } from './agentChat.js';
 
@@ -246,8 +246,9 @@ export function agentExtraRouter(deps: Deps): Router {
 
   // ---- workspace files (artifacts)
   r.get('/agent/files', (req, res) => {
-    const files = listFiles(workspaceDir(agent.services, owner(req)));
-    res.json({ files, usedBytes: files.reduce((n, f) => n + f.size, 0), limitBytes: MAX_WORKSPACE_BYTES });
+    const root = workspaceDir(agent.services, owner(req));
+    // downloads/ (big single files like an APK) has its own 100 MB limit, so it is not in the 20 MB bar.
+    res.json({ files: listFiles(root), usedBytes: usedBytes(root), limitBytes: MAX_WORKSPACE_BYTES });
   });
   r.post('/agent/files', (req, res) => {
     const b = parseBody(FileBody, req.body);
