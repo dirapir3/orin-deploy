@@ -21,6 +21,7 @@ import { runCodeTool, browseTool } from './adapters.js';
 import { connectorTools } from '../connectors.js';
 import { sandboxTools } from './sandbox.js';
 import { reviewDesignTool } from './review.js';
+import { learnLessonTool } from './learn.js';
 import { sandboxBrowserTool, sandboxEditFileTool, sandboxJobTool, sandboxLiveViewTool } from './computer.js';
 
 export const ALL_TOOLS: ToolDef[] = [
@@ -54,6 +55,7 @@ export const ALL_TOOLS: ToolDef[] = [
   ...connectorTools,
   ...sandboxTools,
   reviewDesignTool,
+  learnLessonTool,
   sandboxEditFileTool,
   sandboxJobTool,
   sandboxBrowserTool,

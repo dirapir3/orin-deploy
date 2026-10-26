@@ -282,6 +282,10 @@ export class AgentStore {
   listMemories(owner: string, limit = 200): Memory[] {
     return this.all('SELECT * FROM memories WHERE owner = ? ORDER BY updated_at DESC LIMIT ?', owner, limit).map(toMemory);
   }
+  /** Lessons the agent taught itself (learn_lesson): memories tagged "lesson", newest first. */
+  listLessons(owner: string, limit = 20): Memory[] {
+    return this.all("SELECT * FROM memories WHERE owner = ? AND (',' || replace(tags, ' ', '') || ',') LIKE '%,lesson,%' ORDER BY updated_at DESC LIMIT ?", owner, limit).map(toMemory);
+  }
   /** Keyword search; empty query returns the most recent. */
   searchMemories(owner: string, query: string, limit = 10): Memory[] {
     const words = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2);

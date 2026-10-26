@@ -20,6 +20,17 @@ export const WORK_METHOD: string[] = [
   'When something cannot be done, say plainly what failed, what you tried, and the one next step the user can take. A partial result is labelled as partial.',
   'Facts you bring in (prices, dates, specs, news) come from a tool result in this conversation, from the primary source when there is one. Never invent a link.',
   'Answer what was asked and stop. No unrequested advice, no offers stacked at the end.',
+  'Keep improving yourself: when you solved something only after a failure, found a better way, or the user corrected your work or taste, save the reusable rule with learn_lesson. Your saved lessons are listed in this prompt; follow them.',
+];
+
+/** How Orin works on her own code (her source is public; deploying it stays the user's step). */
+export const SELF_IMPROVEMENT: string[] = [
+  '## Improving your own app and server',
+  'Your own source code (the Orin app and server) is public at https://github.com/dirapir3/orin-deploy. When the user asks you to improve yourself, add a feature to Orin, or fix one of your own bugs, work on it like any other build:',
+  '- On your computer: git clone --depth 1 https://github.com/dirapir3/orin-deploy (or git pull if it is already there), read the README/HANDOFF notes and the code involved, then make the change.',
+  '- Server changes: in server/, npm ci, then npx tsc --noEmit and npx vitest run; add a test for what you changed and keep every test passing. App changes: build the web app or APK the usual way and review_design every changed screen.',
+  '- Deliver the result: a short summary of what changed and how it was tested, plus the patch (git diff > orin-change.patch) or the zipped project sent with sandbox_save, or the APK. Going live (pushing to GitHub and deploying on Render) needs the user\'s accounts: say so, and only do it with their sign-in and their approval of each push or deploy.',
+  '- Never put keys or passwords in code, patches or commits; never remove approval prompts, the vault or privacy protections.',
 ];
 
 /** Design defaults for anything visual Orin builds (websites, web apps, phone app screens). */
@@ -53,6 +64,7 @@ export function craftLines(tools: string[], mode: 'chat' | 'voice' | 'task'): st
   if (mode === 'voice') return ['', ...WORK_METHOD.slice(0, 1), ...VOICE_METHOD];
   const out = ['', ...WORK_METHOD];
   if (mode === 'task') out.push(FINAL_CHECK);
+  if (tools.includes('sandbox_run')) out.push('', ...SELF_IMPROVEMENT);
   if (canBuild) out.push('', ...DESIGN_STANDARDS.filter((l) => tools.includes('review_design') || !l.includes('review_design')));
   return out;
 }
@@ -83,12 +95,19 @@ export class WorkTracker {
   private repeatFails = new Map<string, number>();
   private streak = 0;
   private gates = 0;
+  /** a tool that failed and then succeeded: something was learned */
+  private recovered = '';
+  private failedOnce = new Set<string>();
+  private learned = false;
+  private askedToLearn = false;
+  private readonly canLearn: boolean;
   private readonly canReview: boolean;
   private readonly canRun: boolean;
 
   constructor(toolNames: string[], private readonly maxGates = 2) {
     this.canReview = toolNames.includes('review_design');
     this.canRun = toolNames.some((t) => t === 'sandbox_run' || t === 'run_code');
+    this.canLearn = toolNames.includes('learn_lesson');
   }
 
   /** Record one finished tool call. Returns a recovery note for the model when it is going in circles. */
@@ -104,12 +123,15 @@ export class WorkTracker {
     }
     if (ok && VERIFY_UI.has(name)) this.uiDirty = false;
     if (ok && RUNS_CODE.has(name)) this.codeDirty = false;
+    if (ok && name === 'learn_lesson') this.learned = true;
+    if (ok && this.failedOnce.has(name) && !LOOKUP.test(name)) this.recovered = name;
     if (ok) {
       this.lastFail.delete(name);
       this.streak = 0;
       return null;
     }
     this.streak++;
+    this.failedOnce.add(name);
     const key = `${name}:${JSON.stringify(args ?? {})}`;
     const n = (this.repeatFails.get(key) ?? 0) + 1;
     this.repeatFails.set(key, n);
@@ -138,6 +160,11 @@ export class WorkTracker {
       const claimsSuccess = /\b(done|ready|live|finished|built|published|sent|saved|deployed|installed|fixed|works now)\b/i.test(reply) && !/\b(not|couldn'?t|could not|failed|didn'?t|unable|isn'?t|wasn'?t)\b/i.test(reply);
       if (claimsSuccess) note = `Before you finish: ${name} failed ("${err.replace(/\s+/g, ' ').slice(0, 160)}") and has not succeeded since. Either fix it and verify, or say plainly in your answer which part is not done and why. Do not report it as working.`;
       this.lastFail.clear();
+    }
+    if (!note && this.recovered && this.canLearn && !this.learned && !this.askedToLearn) {
+      // self-improvement: a problem was hit and solved, so keep the fix for next time
+      this.askedToLearn = true;
+      note = `Before you finish: ${this.recovered} failed at first and then worked. If what fixed it is reusable, save it with learn_lesson as one short rule so you don't hit it again (skip it if it was a one-off), then give the same final answer.`;
     }
     if (note) this.gates++;
     return note;

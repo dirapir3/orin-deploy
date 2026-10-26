@@ -107,7 +107,9 @@ export async function buildAgentContext(
   const lastUser = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
   const relevant = deps.persona.incognito ? [] : deps.store.searchMemories(deps.owner, lastUser, 8);
   const recent = deps.persona.incognito ? [] : deps.store.listMemories(deps.owner, 20);
-  const memories = [...relevant, ...recent.filter((m) => !relevant.some((r) => r.id === m.id))].slice(0, 25);
+  const facts = [...relevant, ...recent.filter((m) => !relevant.some((r) => r.id === m.id))].slice(0, 25);
+  // lessons she taught herself (learn_lesson) always come along, so she keeps improving
+  const memories = [...facts, ...deps.store.listLessons(deps.owner).filter((l) => !facts.some((m) => m.id === l.id))];
   const system = buildAgentSystemPrompt(body.preferences, body.mode, { ...deps.persona, memories });
   const out: ProviderMessage[] = [{ role: 'system', content: system }];
   if (summary) out.push({ role: 'system', content: `Summary of the earlier part of this conversation:\n${summary}` });

@@ -1,5 +1,6 @@
 import { buildSystemPrompt } from '../ai/prompt.js';
 import { craftLines } from './craft.js';
+import { isLesson } from './tools/learn.js';
 import type { Preferences } from '../schemas.js';
 import type { Memory } from './store.js';
 
@@ -135,8 +136,11 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
       ...o.unavailable.map((u) => `- ${u.name}: needs ${u.needs}`),
     );
   }
-  if (o.memories?.length) {
-    lines.push('', '## What you remember about the user (from earlier conversations)', ...o.memories.map((m) => `- ${m.text}`), 'Use these naturally when relevant; do not list them unprompted.');
+  const lessons = (o.memories ?? []).filter((m) => isLesson(m.tags));
+  const facts = (o.memories ?? []).filter((m) => !isLesson(m.tags));
+  if (lessons.length) lines.push('', '## What you have learned from your own past work (apply these every time)', ...lessons.map((m) => `- ${m.text}`));
+  if (facts.length) {
+    lines.push('', '## What you remember about the user (from earlier conversations)', ...facts.map((m) => `- ${m.text}`), 'Use these naturally when relevant; do not list them unprompted.');
   }
   return lines.join('\n');
 }
