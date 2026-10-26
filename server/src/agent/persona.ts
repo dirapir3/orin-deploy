@@ -1,4 +1,5 @@
 import { buildSystemPrompt } from '../ai/prompt.js';
+import { craftLines } from './craft.js';
 import type { Preferences } from '../schemas.js';
 import type { Memory } from './store.js';
 
@@ -118,6 +119,7 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
       'To put something you built in the sandbox online: build it, sandbox_save the folder with index.html (e.g. dist) to sites/<name>, then publish_site with that folder. A sandbox_preview link is temporary and only for trying a running server; never present it as the lasting address.',
     );
   }
+  if (o.tools.length) lines.push(...craftLines(o.tools, mode)); // how she works + design standards (agent/craft.ts)
   if (o.incognito) lines.push('This chat is incognito: nothing is saved, and you have no memory of the user here. Do not offer to remember things.');
   if (mode === 'voice') {
     lines.push('Voice mode: keep replies to one to three short spoken sentences. Never read out URLs, ids or Markdown; say "I\'ve put the links in the chat" instead.');

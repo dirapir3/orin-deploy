@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ChatProvider, ProviderMessage, ToolCall } from '../ai/types.js';
 import { AppError } from '../errors.js';
+import { WorkTracker } from './craft.js';
 import { friendlyLabel, friendlySummary } from './friendly.js';
 import { toToolSpec, type ToolContext, type ToolDef, type ToolDisplay } from './tools/types.js';
 
@@ -32,6 +33,8 @@ export interface RunAgentOptions {
    * Without it the last step answers without tools, honestly saying what is and isn't done.
    */
   handoff?: (messages: ProviderMessage[]) => Promise<string | null>;
+  /** Called after every round of tool results with the transcript so far (background tasks save it, so a restart resumes from here). */
+  onCheckpoint?: (messages: ProviderMessage[], steps: number) => void;
 }
 
 const OUTPUT_LIMIT_NOTE =
@@ -154,6 +157,8 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
   let kept = '';
   const failedTools: string[] = [];
 
+  // what this run built, checked and failed (agent/craft.ts): no unverified build or hidden failure at the end
+  const tracker = new WorkTracker(o.tools.map((t) => t.name));
   let recoveries = 0;
   let emptyNudges = 0;
   let handedOff = false;
@@ -200,6 +205,20 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       continue;
     }
     if (!calls.length) {
+      const gate = last || o.signal.aborted ? null : tracker.gate(stepText);
+      if (gate) {
+        // Not done yet: the build was never looked at, or a failure is being reported as success.
+        // What it wrote becomes progress narration and it goes back to work (outside the step budget).
+        if (stepText.trim()) {
+          messages.push({ role: 'assistant', content: stepText });
+          lastInterim = stepText;
+          o.onEvent({ type: 'interim', text: /\s$/.test(stepText) ? stepText : `${stepText}\n\n` });
+          if (!/\s$/.test(stepText)) text += '\n\n';
+        }
+        messages.push({ role: 'system', content: gate });
+        maxSteps++;
+        continue;
+      }
       finalText = stepText;
       break;
     }
@@ -244,14 +263,23 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
         if (r.display) displays.push(r.display);
         if (!r.ok) failedTools.push(call.name);
         o.onEvent({ type: 'tool_end', id: call.id, name: call.name, ok: r.ok, summary: friendlySummary(call.name, r.ok, r.summary), display: r.display, durationMs: Date.now() - started });
-        return { call, r };
+        return { call, r, args };
       }),
     );
-    for (const { call, r } of results) {
+    const recovery: string[] = [];
+    for (const { call, r, args } of results) {
       messages.push({ role: 'tool', toolCallId: call.id, name: call.name, content: r.content.slice(0, 24_000) });
+      const note = tracker.record(call.name, args, r.ok, r.content);
+      if (note && !recovery.includes(note)) recovery.push(note);
     }
+    if (recovery.length) messages.push({ role: 'system', content: recovery.join('\n') });
     if (cutOff) messages.push({ role: 'system', content: OUTPUT_LIMIT_NOTE });
     finishReason = 'tool_calls';
+    try {
+      o.onCheckpoint?.(messages, steps);
+    } catch {
+      /* a failed checkpoint never stops the work */
+    }
   }
 
   if (finishReason === 'tool_calls' && o.handoff && !o.signal.aborted) {

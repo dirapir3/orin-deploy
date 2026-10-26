@@ -20,6 +20,7 @@ import { createTaskTool, deepResearchTool, taskStatusTool, saveSkillTool, runSki
 import { runCodeTool, browseTool } from './adapters.js';
 import { connectorTools } from '../connectors.js';
 import { sandboxTools } from './sandbox.js';
+import { reviewDesignTool } from './review.js';
 import { sandboxBrowserTool, sandboxEditFileTool, sandboxJobTool, sandboxLiveViewTool } from './computer.js';
 
 export const ALL_TOOLS: ToolDef[] = [
@@ -52,6 +53,7 @@ export const ALL_TOOLS: ToolDef[] = [
   ...extraTools,
   ...connectorTools,
   ...sandboxTools,
+  reviewDesignTool,
   sandboxEditFileTool,
   sandboxJobTool,
   sandboxBrowserTool,

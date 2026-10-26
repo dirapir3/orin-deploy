@@ -389,6 +389,10 @@ export class AgentStore {
     );
     return this.getTaskById(id)!;
   }
+  /** Replaces a task's input (background tasks save a checkpoint of their progress here). */
+  updateTaskInput(id: string, input: Record<string, unknown>): void {
+    this.run('UPDATE tasks SET input = ? WHERE id = ?', JSON.stringify(input), id);
+  }
   getTaskById(id: string): Task | null {
     const r = this.get('SELECT * FROM tasks WHERE id = ?', id);
     return r ? toTask(r) : null;

@@ -344,6 +344,20 @@ export class AgentRuntime {
     const memories = this.store.listMemories(task.owner, 20);
     const system = buildAgentSystemPrompt(undefined, 'task', { character: task.owner.includes('#') ? task.owner.split('#')[1] : 'orin', timezone: tz, memories, tools: tools.map((t) => t.name), unavailable: this.unavailable(task.owner), inTask: true });
     const resume = Array.isArray(task.input.resume) ? (task.input.resume as ProviderMessage[]) : null;
+    // A checkpoint means a server restart interrupted this task mid-way: carry on from it, a few times at most.
+    const restarts = task.input.checkpoint ? (typeof task.input.restarts === 'number' ? task.input.restarts : 0) + 1 : 0;
+    if (restarts > 3) throw new Error('It was interrupted by server restarts too many times. Ask me to start it again.');
+    if (restarts) {
+      this.store.updateTaskInput(task.id, { ...task.input, restarts });
+      this.store.addTaskEvent(task.id, 'resumed', 'Picking up where it left off after a server restart');
+    }
+    let lastSave = 0;
+    const checkpoint = (msgs: ProviderMessage[]) => {
+      if (Date.now() - lastSave < 45_000) return;
+      lastSave = Date.now();
+      const keep = msgs.filter((m, i) => !(i === 0 && m.role === 'system') && !(m.role === 'system' && m.content.startsWith('You are carrying on this job')));
+      this.store.updateTaskInput(task.id, { ...task.input, resume: compactTranscript(keep), checkpoint: true, restarts });
+    };
     const messages: ProviderMessage[] = resume?.length
       ? [
           { role: 'system', content: system },
@@ -369,6 +383,7 @@ export class AgentRuntime {
       toolTimeoutMs: this.config.agent.toolTimeoutMs,
       signal,
       onEvent,
+      onCheckpoint: checkpoint,
       handoff: async (msgs) =>
         this.continueInBackground(task.owner, {
           title: task.title,
@@ -379,6 +394,11 @@ export class AgentRuntime {
           part: typeof task.input.part === 'number' ? task.input.part : 0,
         }),
     });
+    if (lastSave) {
+      // finished: the checkpoint is no longer needed (keeps the synced database small)
+      const { resume: _r, checkpoint: _c, ...rest } = this.store.getTaskById(task.id)?.input ?? task.input;
+      this.store.updateTaskInput(task.id, rest);
+    }
     if (!res.text.trim()) throw new Error('The model returned an empty result.');
     // The result is what the user reads: the final answer, not the narration between tool calls.
     return { text: (res.reply || res.text).trim(), handedOff: !!res.handedOff };
