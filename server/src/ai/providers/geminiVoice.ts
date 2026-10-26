@@ -185,11 +185,15 @@ export class GeminiVoiceProvider implements VoiceProvider {
   async transcribe(req: TranscribeRequest): Promise<{ text: string }> {
     const mime = req.mimeType === 'audio/x-m4a' || req.mimeType === 'audio/m4a' ? 'audio/mp4' : req.mimeType || 'audio/mp4';
     const lang = req.language ? ` The speaker is most likely using language code "${req.language}".` : '';
+    // Voice call barge-in: the assistant's own voice may be heard first; only the person counts.
+    const echo = req.ignore
+      ? ` The recording was made during a voice call while an AI assistant was talking through the phone speaker, so its voice may be heard${req.speechAt ? `, mostly before about ${req.speechAt.toFixed(1)} seconds in` : ''}. It was saying: "${req.ignore.replace(/"/g, "'")}". Leave the assistant's words out completely and write only what the person says.`
+      : '';
     const json = await this.generate(
       this.sttModels,
       {
         systemInstruction: {
-          parts: [{ text: `You are a speech-to-text engine. Transcribe exactly what is said in the audio, in the language spoken, with normal punctuation.${lang} Output only the transcript. If there is no intelligible speech, output nothing at all.` }],
+          parts: [{ text: `You are a speech-to-text engine. Transcribe exactly what is said in the audio, in the language spoken, with normal punctuation.${lang}${echo} Output only the transcript. If there is no intelligible speech, output nothing at all.` }],
         },
         contents: [{ role: 'user', parts: [{ inlineData: { mimeType: mime, data: req.audio.toString('base64') } }, { text: 'Transcribe this audio.' }] }],
         generationConfig: { temperature: 0, maxOutputTokens: 1024 },

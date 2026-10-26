@@ -70,6 +70,13 @@ export interface TranscribeRequest {
   mimeType: string;
   filename: string;
   language?: string;
+  /**
+   * Voice call barge-in: what the assistant was saying while this was recorded (its voice can be
+   * heard at the start) and about where the person starts talking, in seconds. Providers that
+   * can't use these ignore them; the app also strips leading echo itself.
+   */
+  ignore?: string;
+  speechAt?: number;
   signal: AbortSignal;
 }
 

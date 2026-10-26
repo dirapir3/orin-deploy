@@ -81,6 +81,9 @@ export function voiceRouter(deps: Deps) {
       const mime = (file.mimetype || '').toLowerCase();
       if (!AUDIO_TYPES.has(mime)) throw new AppError('unsupported_file', `Unsupported audio type: ${mime || 'unknown'}.`);
       const language = typeof req.body?.language === 'string' && /^[a-z]{2}$/.test(req.body.language) ? req.body.language : undefined;
+      const ignore = typeof req.body?.ignore === 'string' && req.body.ignore.trim() ? req.body.ignore.trim().slice(-2000) : undefined;
+      const at = Number(req.body?.speechAt);
+      const speechAt = Number.isFinite(at) && at > 0 && at < 600 ? at : undefined;
       const controller = new AbortController();
       res.on('close', () => {
         if (!res.writableEnded) controller.abort();
@@ -90,6 +93,8 @@ export function voiceRouter(deps: Deps) {
         mimeType: mime === 'video/mp4' ? 'audio/mp4' : mime,
         filename: `speech.${EXT[mime] ?? 'm4a'}`,
         language,
+        ignore,
+        speechAt,
         signal: controller.signal,
       });
       usage.record(req.auth, { kind: 'stt', provider: voice.id, model: voice.sttModel, status: 'ok', units: file.size, durationMs: Date.now() - started });
