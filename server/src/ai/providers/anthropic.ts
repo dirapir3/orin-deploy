@@ -1,6 +1,7 @@
 import { AppError } from '../../errors.js';
 import { providerFetch, withTimeout, type FetchLike } from '../http.js';
 import { readSSE } from '../sse.js';
+import { outputCap } from '../outputCap.js';
 import type { ChatChunk, ChatProvider, ChatRequest } from '../types.js';
 
 interface Options {
@@ -52,7 +53,7 @@ export class AnthropicChatProvider implements ChatProvider {
       },
       body: JSON.stringify({
         model: req.model,
-        max_tokens: req.maxOutputTokens,
+        max_tokens: Math.min(req.maxOutputTokens, outputCap(this.opts.baseUrl, req.model)),
         system: system || undefined,
         messages,
         stream: true,

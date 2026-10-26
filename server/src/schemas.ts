@@ -39,6 +39,8 @@ export const ChatMessageSchema = z.object({
 export const ChatRequestSchema = z
   .object({
     conversationId: z.string().uuid().optional(),
+    /** id of the reply message the app shows; a reply that finishes while the app is away lands in it */
+    replyId: z.string().uuid().optional(),
     messages: z.array(ChatMessageSchema).min(1).max(MAX_MESSAGES),
     preferences: PreferencesSchema.optional(),
     mode: z.enum(['chat', 'voice']).default('chat'),

@@ -1,6 +1,7 @@
 import { AppError, providerHttpError } from '../../errors.js';
 import { withTimeout, type FetchLike } from '../http.js';
 import { readSSE } from '../sse.js';
+import { outputCap } from '../outputCap.js';
 import type { ChatChunk, ChatProvider, ChatRequest, ProviderMessage } from '../types.js';
 
 interface Options {
@@ -70,7 +71,7 @@ export class GeminiChatProvider implements ChatProvider {
   async *streamChat(req: ChatRequest): AsyncIterable<ChatChunk> {
     const signal = withTimeout(req.signal, this.opts.timeoutMs);
     const { system, contents } = toGeminiContents(req.messages);
-    const generationConfig: Record<string, unknown> = { maxOutputTokens: req.maxOutputTokens };
+    const generationConfig: Record<string, unknown> = { maxOutputTokens: Math.min(req.maxOutputTokens, outputCap('generativelanguage.googleapis.com', req.model)) };
     if (req.temperature !== undefined) generationConfig.temperature = req.temperature;
     if (this.opts.thinkingBudget !== null) generationConfig.thinkingConfig = { thinkingBudget: this.opts.thinkingBudget };
 

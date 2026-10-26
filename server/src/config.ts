@@ -133,9 +133,17 @@ const EnvSchema = z.object({
 
   // Agent runtime
   AGENT_ENABLED: bool(true),
-  AGENT_MAX_STEPS: int(8),
+  AGENT_MAX_STEPS: int(30),
   AGENT_TOOL_TIMEOUT_MS: int(45000),
-  TASK_MAX_STEPS: int(16),
+  TASK_MAX_STEPS: int(40),
+  /** How many background tasks one long job may hand itself on to when it runs out of steps. */
+  AGENT_MAX_CONTINUATIONS: int(4),
+  /**
+   * Output token budget for one agent step (tool calls included). Big: thinking models such as
+   * Gemini 3.5 Flash spend part of it thinking, and one file written through a tool call can be
+   * 10k+ tokens. With the old 2048 the call was cut off and the model returned nothing at all.
+   */
+  AGENT_MAX_OUTPUT_TOKENS: int(32768),
   DATA_DIR: str('./data'),
   PUBLIC_URL: str(''),
   WORKER_ENABLED: bool(true),
@@ -252,6 +260,9 @@ export interface AppConfig {
     enabled: boolean;
     maxSteps: number;
     taskMaxSteps: number;
+    maxContinuations: number;
+    /** output token budget per agent step (each provider caps it to what it accepts) */
+    maxOutputTokens: number;
     toolTimeoutMs: number;
     dataDir: string;
     publicUrl: string;
@@ -906,8 +917,10 @@ export function loadConfig(rawEnv: Record<string, string | undefined> = process.
     },
     agent: {
       enabled: e.AGENT_ENABLED,
-      maxSteps: Math.min(Math.max(e.AGENT_MAX_STEPS, 1), 30),
-      taskMaxSteps: Math.min(Math.max(e.TASK_MAX_STEPS, 2), 60),
+      maxSteps: Math.min(Math.max(e.AGENT_MAX_STEPS, 1), 100),
+      taskMaxSteps: Math.min(Math.max(e.TASK_MAX_STEPS, 2), 120),
+      maxContinuations: Math.min(Math.max(e.AGENT_MAX_CONTINUATIONS, 0), 10),
+      maxOutputTokens: Math.min(Math.max(e.AGENT_MAX_OUTPUT_TOKENS, 2048), 65536),
       toolTimeoutMs: Math.max(e.AGENT_TOOL_TIMEOUT_MS, 2000),
       dataDir: e.DATA_DIR,
       publicUrl: (e.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, ''),

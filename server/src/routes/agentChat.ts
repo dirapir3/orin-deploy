@@ -9,10 +9,10 @@ import type { ChatRequestBody } from '../schemas.js';
 import { buildAgentContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { isValidTimezone } from '../agent/cron.js';
+import { chatRuns } from '../agent/chatRuns.js';
 
-function sse(res: Response, event: string, data: unknown) {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
+/** A chat reply keeps working on the server when the app goes away, but not forever. */
+const DETACHED_RUN_MS = 50 * 60_000;
 
 export function requestBaseUrl(req: Request): string {
   return `${req.protocol}://${req.get('host') ?? 'localhost'}`;
@@ -31,22 +31,34 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   const owner = agentOwnerKey(req);
   const account = requesterKey(req);
   const timezone = body.timezone && isValidTimezone(body.timezone) ? body.timezone : undefined;
-  const controller = new AbortController();
-  res.on('close', () => {
-    if (!res.writableEnded) controller.abort();
-  });
-  const incognito = Boolean(body.incognito);
   if (agent.store.usageToday(account, 'chat') >= dailyLimits().chat) throw new AppError('rate_limited', `You've reached today's limit of ${dailyLimits().chat} messages. It resets at midnight UTC.`);
+  const incognito = Boolean(body.incognito);
+  const conversationId = body.conversationId && !incognito ? body.conversationId : null;
+  // The run belongs to the server, not to this connection: closing the app or losing the network
+  // does not stop it (the app can pick it up again, see chatRuns.ts). Stop goes through
+  // POST /v1/agent/runs/:id/cancel.
+  const run = chatRuns.create(owner, account, body.replyId ?? null, conversationId);
+  const controller = run.controller;
+  const sse = (_res: Response, event: string, data: unknown) => run.emit(event, data);
+  const limit = setTimeout(() => controller.abort(), DETACHED_RUN_MS);
+  limit.unref?.();
   const character = agentIdOf(req);
   const tools = agent.tools.available(owner, agent.services, { incognito });
   // Fails fast (before streaming) on images the model cannot read, etc.
-  const ctx = await buildAgentContext(body, config, {
-    store: agent.store,
-    owner,
-    provider,
-    signal: controller.signal,
-    persona: { timezone, tools: tools.map((t: { name: string }) => t.name), unavailable: agent.unavailable(owner), character, incognito },
-  });
+  let ctx: Awaited<ReturnType<typeof buildAgentContext>>;
+  try {
+    ctx = await buildAgentContext(body, config, {
+      store: agent.store,
+      owner,
+      provider,
+      signal: controller.signal,
+      persona: { timezone, tools: tools.map((t: { name: string }) => t.name), unavailable: agent.unavailable(owner), character, incognito },
+    });
+  } catch (err) {
+    clearTimeout(limit);
+    run.end();
+    throw err;
+  }
   const model = ctx.hasImages ? config.chat.visionModel : config.chat.model;
 
   res.status(200);
@@ -55,15 +67,15 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
-  const heartbeat = setInterval(() => res.write(': ping\n\n'), 15_000);
+  run.attach(res, 0);
   const started = Date.now();
   let chars = 0;
   let served: { provider: string; model: string } = { provider: provider.id, model };
-  sse(res, 'meta', { provider: provider.id, model, demo: false, agent: true, tools: tools.length, trimmedMessages: ctx.trimmed, summarized: ctx.summarized, incognito });
+  sse(res, 'meta', { runId: run.id, provider: provider.id, model, demo: false, agent: true, tools: tools.length, trimmedMessages: ctx.trimmed, summarized: ctx.summarized, incognito });
   agent.store.bumpUsage(account, 'chat');
   const toolCtx = agent.toolContext(owner, controller.signal, body.mode === 'voice' ? 'voice' : 'chat', requestBaseUrl(req), timezone);
   toolCtx.incognito = incognito;
-  if (body.conversationId && !incognito) toolCtx.conversationId = body.conversationId;
+  if (conversationId) toolCtx.conversationId = conversationId;
   // Approval cards and questions are streamed into this conversation; the reply waits for the tap.
   toolCtx.ask = (input) =>
     agent.ask(owner, input, {
@@ -78,10 +90,18 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       messages: ctx.messages,
       tools,
       ctx: toolCtx,
-      maxSteps: config.agent.maxSteps,
-      maxOutputTokens: Math.max(config.chat.maxOutputTokens, provider.id === 'pollinations' ? 2048 : 0),
+      maxSteps: body.mode === 'voice' ? Math.min(config.agent.maxSteps, 12) : config.agent.maxSteps,
+      maxOutputTokens: config.agent.maxOutputTokens,
       toolTimeoutMs: config.agent.toolTimeoutMs,
       signal: controller.signal,
+      // out of steps with work still going: carry on as a background task instead of stopping
+      handoff: incognito
+        ? undefined
+        : async (msgs) => {
+            const lastUser = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+            const title = lastUser.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Carrying on';
+            return agent.continueInBackground(owner, { title, prompt: lastUser, messages: msgs, conversationId, timezone });
+          },
       onEvent: (ev) => {
         if (controller.signal.aborted) return;
         if (ev.type === 'delta') {
@@ -107,6 +127,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       reply = result.failedTools.length ? "Some steps didn't work, and I stopped before finishing. Ask me to try again, or tell me what to change." : 'Done.';
       if (chars === 0) sse(res, 'delta', { text: reply });
     }
+    deliverIfAway(reply);
     sse(res, 'done', {
       finishReason: result.finishReason === 'length' || result.finishReason === 'max_tokens' ? 'length' : 'stop',
       usage: { inputTokens: result.inputTokens || undefined, outputTokens: result.outputTokens || undefined },
@@ -121,9 +142,23 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     const e = toAppError(err);
     if (e.code !== 'cancelled') logger.warn('agent chat failed', { code: e.code, provider: provider.id, message: e.message });
     usage.record(req.auth, { kind: 'chat', provider: provider.id, model, status: e.code === 'cancelled' ? 'cancelled' : 'error', durationMs: Date.now() - started, errorCode: e.code });
-    if (!res.writableEnded && !controller.signal.aborted) sse(res, 'error', e.toJSON().error);
+    if (!controller.signal.aborted) {
+      deliverIfAway(`I ran into a problem and couldn't finish: ${e.message}`);
+      sse(res, 'error', e.toJSON().error);
+    }
   } finally {
-    clearInterval(heartbeat);
+    clearTimeout(limit);
+    run.end(); // ends every attached stream
     if (!res.writableEnded) res.end();
+  }
+
+  /** Nobody is watching (app closed or in the background): put the reply in the inbox for the phone. */
+  function deliverIfAway(text: string) {
+    if (run.attached || !conversationId) return;
+    try {
+      agent.store.addInbox(owner, 'reply', 'Reply', text, conversationId, run.replyId ?? undefined);
+    } catch (err) {
+      logger.warn('could not save a reply for later', { err: String(err) });
+    }
   }
 }

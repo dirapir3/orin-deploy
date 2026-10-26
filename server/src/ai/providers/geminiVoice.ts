@@ -29,17 +29,41 @@ export const GEMINI_VOICES: VoiceInfo[] = [
   { id: 'Schedar', name: 'Schedar · even' },
 ];
 
-/** Each character's own voice and speaking style. */
-export const CHARACTER_VOICES: Record<string, { voice: string; style: string }> = {
-  orin: { voice: 'Sulafat', style: 'Speak warmly and naturally, like a thoughtful friend' },
-  nova: { voice: 'Laomedeia', style: 'Speak with bright, playful energy and a smile in your voice' },
-  sage: { voice: 'Gacrux', style: 'Speak calmly and slowly, with a gentle, unhurried pace' },
-  max: { voice: 'Orus', style: 'Speak briskly and directly, with dry confidence' },
+/**
+ * Each character's own fixed voice: two female, two male. Only the spoken words go to the voice
+ * model; no speaking directions are sent (they used to be pasted in front of the text and were
+ * sometimes read out loud).
+ */
+export const CHARACTER_VOICES: Record<string, { voice: string; gender: 'female' | 'male' }> = {
+  orin: { voice: 'Sulafat', gender: 'female' },
+  nova: { voice: 'Laomedeia', gender: 'female' },
+  sage: { voice: 'Algieba', gender: 'male' },
+  max: { voice: 'Orus', gender: 'male' },
 };
 
-export function characterVoice(character?: string | null): { voice: string; style: string } {
+export function characterVoice(character?: string | null): { voice: string; gender: 'female' | 'male' } {
   return CHARACTER_VOICES[character ?? ''] ?? CHARACTER_VOICES.orin!;
 }
+
+/**
+ * Removes stage directions before text is spoken: "(softly)", "[laughs]", "*smiles*", and a
+ * leading "Speaking warmly:" / "Speak calmly and slowly, ...:" line. Real words are kept.
+ */
+export function cleanSpokenText(text: string): string {
+  let t = text;
+  // *laughs*, _sighs_ (short, no sentence end inside): acting notes, not emphasis on real words
+  t = t.replace(/(^|\s)[*_]{1,2}([a-z][a-z ,'-]{1,40})[*_]{1,2}(?=\s|[.,!?]|$)/gi, (m, pre: string, inner: string) =>
+    ACTING_WORDS.test(inner) ? pre : m,
+  );
+  // (softly), [laughs], (in a warm voice)
+  t = t.replace(/[([]\s*([a-z][a-z ,'-]{0,40})\s*[)\]]/gi, (m, inner: string) => (ACTING_WORDS.test(inner) ? ' ' : m));
+  // a leading direction ending in a colon: "Speaking warmly:", "Speak calmly and slowly, like a friend:"
+  t = t.replace(/^\s*(?:\(|\[)?\s*(?:speak(?:ing|s)?|say(?:ing|s)?|read(?:ing)?|in an? [a-z]+ (?:voice|tone))\b[^:.!?\n]{0,80}:\s*/i, '');
+  return t.replace(/\s{2,}/g, ' ').replace(/\s+([.,!?])/g, '$1').trim();
+}
+
+const ACTING_WORDS =
+  /^(?:\s*(?:softly|gently|warmly|quietly|calmly|slowly|briskly|brightly|cheerfully|playfully|excitedly|happily|sadly|seriously|thoughtfully|dryly|sighs?|sighing|laughs?|laughing|chuckles?|chuckling|giggles?|smiles?|smiling|grins?|grinning|pauses?|pausing|whispers?|whispering|clears throat|clearing throat|beat|in a [a-z ]+ (?:voice|tone)|with a [a-z ]+|warm(?:ly)? tone|upbeat|cheerful(?:ly)?|speaking [a-z ]+|said [a-z ]+)\s*[,.]?)+$/i;
 
 /** 16-bit little-endian mono PCM -> WAV file. */
 export function pcmToWav(pcm: Buffer, sampleRate = 24_000, channels = 1, bits = 16): Buffer {
@@ -181,14 +205,16 @@ export class GeminiVoiceProvider implements VoiceProvider {
     return { text };
   }
 
-  async speak(req: SpeechRequest & { style?: string }): Promise<{ audio: Buffer; mimeType: string }> {
+  async speak(req: SpeechRequest): Promise<{ audio: Buffer; mimeType: string }> {
     if (!this.supportsTts) throw new AppError('voice_not_configured', 'Server voices are off on this server; the app speaks with the device voice.');
     const voice = GEMINI_VOICES.some((v) => v.id === req.voice) ? req.voice! : this.defaultVoice();
-    const style = req.style ? `${req.style}: ` : '';
+    // only the words to say: no speaking directions in front (they could be read out loud)
+    const words = cleanSpokenText(req.text);
+    if (!words) throw new AppError('validation_error', 'Nothing to say.');
     const json = await this.generate(
       this.ttsModels,
       {
-        contents: [{ role: 'user', parts: [{ text: `${style}${req.text}` }] }],
+        contents: [{ role: 'user', parts: [{ text: words }] }],
         generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
       },
       req.signal,

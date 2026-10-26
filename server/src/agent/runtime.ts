@@ -12,6 +12,7 @@ import { webSearch, fetchReadable, type SearchResult } from './tools/web.js';
 import { computeNextRun } from './tools/tasks.js';
 import type { LookupFn } from './net.js';
 import { createSandboxManager } from './sandbox/index.js';
+import { chatRuns } from './chatRuns.js';
 
 export interface AgentRuntimeOptions {
   config: AppConfig;
@@ -106,6 +107,16 @@ export class AgentRuntime {
     if (this.config.agent.worker) {
       this.timers.push(setInterval(() => this.kick(), this.config.agent.workerPollMs));
       this.timers.push(setInterval(() => this.tickScheduler(), this.config.agent.schedulerTickMs));
+      // Render's free plan sleeps after 15 minutes without requests, which would kill a build the
+      // user left running with the app closed. While work is going, knock on our own front door.
+      const url = this.config.agent.publicUrl;
+      if (url.startsWith('https://') && process.env.RENDER) {
+        this.timers.push(
+          setInterval(() => {
+            if (this.running.size || chatRuns.anyActive()) void fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(20_000) }).catch(() => undefined);
+          }, 4 * 60_000),
+        );
+      }
       for (const t of this.timers) t.unref();
     }
   }
@@ -257,7 +268,13 @@ export class AgentRuntime {
           if (!skill) throw new Error('The skill no longer exists.');
           prompt = `Run the skill "${skill.name}".\n\nInstructions:\n${skill.instructions}${task.input.extra ? `\n\nExtra context: ${String(task.input.extra)}` : ''}`;
         }
-        const text = await this.runAgentTask(task, prompt, tz, ctrl.signal);
+        const { text, handedOff } = await this.runAgentTask(task, prompt, tz, ctrl.signal);
+        if (handedOff) {
+          // the next part picks up from here and brings the result to the user
+          this.store.finishTask(task.id, 'done', { result: text });
+          this.store.addTaskEvent(task.id, 'done', 'Carrying on in the next part');
+          return;
+        }
         let noteId: string | null = null;
         if (task.input.saveAsNote && text.trim()) noteId = this.store.createNote(task.owner, task.title, text, 'task').id;
         this.store.finishTask(task.id, 'done', { result: text, noteId });
@@ -297,15 +314,46 @@ export class AgentRuntime {
     return out;
   }
 
-  private async runAgentTask(task: Task, prompt: string, tz: string | undefined, signal: AbortSignal): Promise<string> {
+  /**
+   * Hands a long job on to a background task that picks up exactly where `messages` left off
+   * (same transcript, fresh step budget), so work never stops halfway at a step limit and the
+   * user is never asked to say "continue". Returns the line to tell the user, or null when the
+   * chain of continuations is used up.
+   */
+  continueInBackground(owner: string, o: { title: string; prompt: string; messages: ProviderMessage[]; conversationId?: string | null; timezone?: string; part?: number }): string | null {
+    const part = (o.part ?? 0) + 1;
+    if (part > this.config.agent.maxContinuations) return null;
+    const resume = compactTranscript(o.messages.filter((m, i) => !(i === 0 && m.role === 'system')));
+    const t = this.store.createTask(owner, 'agent', o.title.slice(0, 120), {
+      prompt: o.prompt.slice(0, 8000),
+      resume,
+      part,
+      ...(o.conversationId ? { conversationId: o.conversationId } : {}),
+      ...(o.timezone ? { timezone: o.timezone } : {}),
+    });
+    this.store.addTaskEvent(t.id, 'queued', part === 1 ? 'Carrying on in the background' : `Carrying on (part ${part + 1})`);
+    this.kick();
+    return part === 1
+      ? "This is taking a while, so I'm carrying on in the background. I'll post the result here as soon as it's done, you don't need to ask again."
+      : "Still going in the background. I'll post the result here when it's done.";
+  }
+
+  private async runAgentTask(task: Task, prompt: string, tz: string | undefined, signal: AbortSignal): Promise<{ text: string; handedOff: boolean }> {
     const provider = this.providerFor(task.owner)!;
     const tools = this.tools.available(task.owner, this.services, { inTask: true });
     const memories = this.store.listMemories(task.owner, 20);
     const system = buildAgentSystemPrompt(undefined, 'task', { character: task.owner.includes('#') ? task.owner.split('#')[1] : 'orin', timezone: tz, memories, tools: tools.map((t) => t.name), unavailable: this.unavailable(task.owner), inTask: true });
-    const messages: ProviderMessage[] = [
-      { role: 'system', content: system },
-      { role: 'user', content: prompt },
-    ];
+    const resume = Array.isArray(task.input.resume) ? (task.input.resume as ProviderMessage[]) : null;
+    const messages: ProviderMessage[] = resume?.length
+      ? [
+          { role: 'system', content: system },
+          ...resume,
+          { role: 'system', content: 'You are carrying on this job in the background from where it left off (the steps above). Do not start over. Finish it and deliver the result (for an app: the APK file with sandbox_save). The user reads your final answer in their chat.' },
+        ]
+      : [
+          { role: 'system', content: system },
+          { role: 'user', content: prompt },
+        ];
     const onEvent = (ev: AgentEvent) => {
       if (ev.type === 'tool_start') this.store.addTaskEvent(task.id, 'tool', ev.label);
       else if (ev.type === 'tool_end') this.store.addTaskEvent(task.id, ev.ok ? 'tool_done' : 'tool_error', ev.summary || (ev.ok ? 'Done' : 'Ran into an error'));
@@ -317,14 +365,23 @@ export class AgentRuntime {
       tools,
       ctx: this.toolContext(task.owner, signal, 'task', this.config.agent.publicUrl || `http://localhost:${this.config.port}`, tz, task.id),
       maxSteps: this.config.agent.taskMaxSteps,
-      maxOutputTokens: Math.max(this.config.chat.maxOutputTokens, 2048),
+      maxOutputTokens: this.config.agent.maxOutputTokens,
       toolTimeoutMs: this.config.agent.toolTimeoutMs,
       signal,
       onEvent,
+      handoff: async (msgs) =>
+        this.continueInBackground(task.owner, {
+          title: task.title,
+          prompt,
+          messages: msgs,
+          conversationId: typeof task.input.conversationId === 'string' ? task.input.conversationId : null,
+          timezone: tz,
+          part: typeof task.input.part === 'number' ? task.input.part : 0,
+        }),
     });
     if (!res.text.trim()) throw new Error('The model returned an empty result.');
     // The result is what the user reads: the final answer, not the narration between tool calls.
-    return (res.reply || res.text).trim();
+    return { text: (res.reply || res.text).trim(), handedOff: !!res.handedOff };
   }
 
   private async complete(messages: ProviderMessage[], signal: AbortSignal, model: string, maxOutputTokens = 1500): Promise<string> {
@@ -413,3 +470,40 @@ export class AgentRuntime {
     return { report: full, noteId: note.id, summary };
   }
 }
+
+/**
+ * A transcript small enough to store with a task: images dropped, old tool output shortened, and
+ * the oldest rounds left out when it is still too big (an assistant turn with tool calls always
+ * keeps its tool results, so the transcript stays valid for every provider).
+ */
+export function compactTranscript(messages: ProviderMessage[], maxChars = 240_000): ProviderMessage[] {
+  const toolIdx = messages.map((m, i) => (m.role === 'tool' ? i : -1)).filter((i) => i >= 0);
+  const recent = new Set(toolIdx.slice(-10));
+  let out: ProviderMessage[] = messages.map((m, i) => {
+    const c: ProviderMessage = { ...m };
+    if (c.images?.length) {
+      c.content = `${c.content}\n[${c.images.length} image(s) left out]`;
+      delete c.images;
+    }
+    const cap = m.role === 'tool' ? (recent.has(i) ? 6000 : 1500) : 12_000;
+    if (c.content.length > cap) c.content = `${c.content.slice(0, cap)}\n…(cut)`;
+    if (c.toolCalls) c.toolCalls = c.toolCalls.map((t) => ({ ...t, arguments: t.arguments.length > 8000 ? JSON.stringify({ note: 'arguments left out (too long); the call already ran' }) : t.arguments }));
+    return c;
+  });
+  const size = () => JSON.stringify(out).length;
+  const firstUser = out.findIndex((m) => m.role === 'user');
+  let dropped = false;
+  while (size() > maxChars) {
+    // the oldest assistant turn after the first user message, with its tool results
+    const start = out.findIndex((m, i) => i > firstUser && m.role === 'assistant');
+    if (start < 0) break;
+    let end = start + 1;
+    while (end < out.length && out[end]?.role === 'tool') end++;
+    if (end >= out.length - 2) break; // keep the latest steps
+    out = [...out.slice(0, start), ...out.slice(end)];
+    dropped = true;
+  }
+  if (dropped) out.splice(firstUser + 1, 0, { role: 'system', content: '(Some earlier steps were left out to save space.)' });
+  return out;
+}
+

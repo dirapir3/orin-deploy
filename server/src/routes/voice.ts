@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { voiceInstructions } from '../ai/prompt.js';
-import { CHARACTER_VOICES, characterVoice } from '../ai/providers/geminiVoice.js';
+import { CHARACTER_VOICES, characterVoice, cleanSpokenText } from '../ai/providers/geminiVoice.js';
 import type { Deps } from '../app.js';
 import { AppError, toAppError } from '../errors.js';
 import { SpeechRequestSchema } from '../schemas.js';
@@ -110,23 +110,25 @@ export function voiceRouter(deps: Deps) {
       const body = parseBody(SpeechRequestSchema, req.body);
       const voices = voice.voices();
       const ch = body.character ? characterVoice(body.character) : null;
+      // each character always speaks in its own fixed voice; a picked voice only applies without one
       const chosen =
-        body.voice && voices.some((v) => v.id === body.voice)
-          ? body.voice
-          : ch && voices.some((v) => v.id === ch.voice)
-            ? ch.voice
+        ch && voices.some((v) => v.id === ch.voice)
+          ? ch.voice
+          : body.voice && voices.some((v) => v.id === body.voice)
+            ? body.voice
             : voice.defaultVoice();
+      const words = cleanSpokenText(body.text);
+      if (!words) throw new AppError('validation_error', 'Nothing to say.');
       const controller = new AbortController();
       res.on('close', () => {
         if (!res.writableEnded) controller.abort();
       });
       const out = await voice.speak({
-        text: body.text,
+        text: words,
         voice: chosen,
         instructions: voiceInstructions(body.preferences),
         signal: controller.signal,
-        ...(ch ? { style: ch.style } : {}),
-      } as Parameters<typeof voice.speak>[0]);
+      });
       usage.record(req.auth, { kind: 'tts', provider: voice.id, model: voice.ttsModel, status: 'ok', units: body.text.length, durationMs: Date.now() - started });
       res.setHeader('Content-Type', out.mimeType);
       res.setHeader('Content-Length', String(out.audio.length));

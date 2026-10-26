@@ -120,15 +120,27 @@ export const sandboxRunTool = defineTool({
 
 export const sandboxWriteFileTool = defineTool({
   name: 'sandbox_write_file',
-  description: `Create or overwrite a text file on your sandbox computer (folders are created). Relative paths are inside ${SANDBOX_WORKDIR}. Use it for source code, configs and site files you then run or build with sandbox_run.`,
-  schema: z.object({ path: z.string().min(1).max(300), content: z.string().max(1_000_000) }),
+  description: `Create or overwrite a text file on your sandbox computer (folders are created). Relative paths are inside ${SANDBOX_WORKDIR}. Use it for source code, configs and site files you then run or build with sandbox_run. For a big file (over ~300 lines) write it in parts: the first part normally, then each next part with append: true.`,
+  schema: z.object({
+    path: z.string().min(1).max(300),
+    content: z.string().max(1_000_000),
+    append: z.boolean().optional().describe('add to the end of the file instead of replacing it'),
+  }),
   label: (a) => `Writing ${short(a.path, 40)}…`,
   needs: ({ services }) => sandboxNeeds(services),
   handler: async (a, ctx) => {
     const p = sandboxPath(a.path);
-    await withSandbox(ctx, (s) => s.writeFile(p, a.content));
-    log(ctx, 'file', `Wrote ${p.replace(`${SANDBOX_WORKDIR}/`, '')}`);
-    return { content: `Wrote ${p} (${Buffer.byteLength(a.content)} bytes).`, summary: `Wrote ${p.split('/').pop()}` };
+    let content = a.content;
+    if (a.append) {
+      const before = await withSandbox(ctx, (s) => s.readFile(p)).catch(() => null);
+      if (before) content = Buffer.from(before).toString('utf8') + a.content;
+    }
+    await withSandbox(ctx, (s) => s.writeFile(p, content));
+    log(ctx, 'file', `${a.append ? 'Added to' : 'Wrote'} ${p.replace(`${SANDBOX_WORKDIR}/`, '')}`);
+    return {
+      content: `${a.append ? 'Added to' : 'Wrote'} ${p} (${Buffer.byteLength(content)} bytes in total).`,
+      summary: `${a.append ? 'Added to' : 'Wrote'} ${p.split('/').pop()}`,
+    };
   },
 });
 

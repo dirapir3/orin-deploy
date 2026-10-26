@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { Deps } from '../app.js';
 import { AppError } from '../errors.js';
 import { agentOwnerKey, agentOwners, requesterKey } from '../middleware/auth.js';
+import { chatRuns } from '../agent/chatRuns.js';
 import { parseBody } from './util.js';
 import { CHARACTERS } from '../agent/persona.js';
 import { saveLogin, toPublic, updateLogin, signToken } from '../agent/vault.js';
@@ -189,6 +190,7 @@ export function agentExtraRouter(deps: Deps): Router {
   /** The chat a task result belongs to (tasks started from a chat remember it). */
   const conversationOf = (kind: string, refId: string | null): string | null => {
     if (!refId) return null;
+    if (kind === 'reply') return refId; // a chat reply that finished while the app was away
     let taskId: string | null = null;
     if (kind.startsWith('task_') || kind === 'schedule_done') taskId = refId;
     else if (kind === 'approval' || kind === 'question') taskId = st.getPromptById(refId)?.taskId ?? null;
@@ -219,6 +221,32 @@ export function agentExtraRouter(deps: Deps): Router {
   });
 
   // all four agents in one poll (items and prompts carry their agent id)
+  // ---- chat replies that keep working while the app is away (see agent/chatRuns.ts)
+  // Pick a reply up again: every event after the first `after` ones, then live ones until it ends.
+  r.get('/agent/runs/:id/events', (req, res) => {
+    const run = chatRuns.get(String(req.params.id), account(req));
+    if (!run) throw new AppError('not_found', 'That reply is no longer available.');
+    const after = Math.max(0, Number.parseInt(String(req.query.after ?? '0'), 10) || 0);
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    run.attach(res, after);
+  });
+  r.get('/agent/runs/:id', (req, res) => {
+    const run = chatRuns.get(String(req.params.id), account(req));
+    if (!run) throw new AppError('not_found', 'That reply is no longer available.');
+    res.json({ id: run.id, done: run.done, events: run.events.length });
+  });
+  // Stop a reply (the Stop button); closing the app does not stop it.
+  r.post('/agent/runs/:id/cancel', (req, res) => {
+    const run = chatRuns.get(String(req.params.id), account(req));
+    if (run && !run.done) run.controller.abort();
+    res.json({ ok: true });
+  });
+
   r.get('/agent/sync-all', (req, res) => {
     const acc = account(req);
     const since = Number(req.query.since) || 0;
@@ -230,7 +258,7 @@ export function agentExtraRouter(deps: Deps): Router {
       const id = CHARACTERS[i]!.id;
       for (const x of st.listInbox(o, since, 100)) items.push({ ...x, owner: undefined, agent: id, conversationId: conversationOf(x.kind, x.refId) });
       for (const p of st.listPrompts(o, 'pending', 20)) prompts.push({ ...p, owner: undefined, agent: id });
-      running += st.listTasks(o, { status: 'queued,running', limit: 50 }).length;
+      running += st.listTasks(o, { status: 'queued,running', limit: 50 }).length + chatRuns.active(o);
     });
     res.json({ items, prompts, running, now: Date.now() });
   });

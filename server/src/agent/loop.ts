@@ -26,7 +26,22 @@ export interface RunAgentOptions {
   toolTimeoutMs: number;
   signal: AbortSignal;
   onEvent: (ev: AgentEvent) => void;
+  /**
+   * Called when the step budget runs out while the model still wants tools. It hands the work on
+   * (a background task that picks up from these messages) and returns the line to tell the user.
+   * Without it the last step answers without tools, honestly saying what is and isn't done.
+   */
+  handoff?: (messages: ProviderMessage[]) => Promise<string | null>;
 }
+
+const OUTPUT_LIMIT_NOTE =
+  'Your last reply was cut off by the output limit before anything was sent, so nothing happened. ' +
+  'Do it again in smaller pieces: write a big file in parts (sandbox_write_file with the first part, then ' +
+  'sandbox_write_file with append: true for each next part, about 300 lines each), or keep each tool call short.';
+const EMPTY_NOTE = 'Your last reply was empty. Carry on: call the next tool you need, or give your final answer.';
+const BUDGET_NOTE =
+  'Step budget reached. Answer now without calling tools: say plainly what is finished (with links or files) and ' +
+  'what is not. Never ask the user to say "continue" or to ask again.';
 
 export interface RunAgentResult {
   text: string;
@@ -38,6 +53,8 @@ export interface RunAgentResult {
   displays: ToolDisplay[];
   /** provider/model that answered the last step (differs from the primary when the fallback chain stepped in) */
   servedBy?: { provider: string; model: string };
+  /** true when the step budget ran out and the work was handed on to a background task */
+  handedOff?: boolean;
   /**
    * What the user should keep as the reply: the final step's text, without the narration written
    * before tool calls. Falls back to the last narration when the final step wrote nothing (the
@@ -137,16 +154,22 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
   let kept = '';
   const failedTools: string[] = [];
 
-  while (steps < o.maxSteps) {
+  let recoveries = 0;
+  let emptyNudges = 0;
+  let handedOff = false;
+  let maxSteps = o.maxSteps;
+  while (steps < maxSteps) {
     if (o.signal.aborted) throw new AppError('cancelled', 'Cancelled.');
     steps++;
     o.onEvent({ type: 'step', step: steps });
-    const last = steps === o.maxSteps;
+    // with a handoff the last step still gets tools; if it uses them, the work moves to the background
+    const last = steps === maxSteps && !o.handoff;
     let stepText = '';
     const calls: ToolCall[] = [];
+    finishReason = 'stop';
     for await (const chunk of o.provider.streamChat({
       model: o.model,
-      messages: last ? [...messages, { role: 'system', content: 'Tool budget reached. Answer now with what you have, without calling tools.' }] : messages,
+      messages: last ? [...messages, { role: 'system', content: BUDGET_NOTE }] : messages,
       maxOutputTokens: o.maxOutputTokens,
       temperature: o.temperature,
       signal: o.signal,
@@ -166,10 +189,22 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       }
     }
     text += stepText;
+    if (!calls.length && !stepText.trim() && (finishReason === 'length' ? recoveries < 2 : emptyNudges < 1)) {
+      // Nothing came back: usually the output limit cut off a big tool call (finish "length"),
+      // sometimes a thinking model ends a turn with only thoughts. Tell it and try again; these
+      // retries don't use up the step budget.
+      if (finishReason === 'length') recoveries++;
+      else emptyNudges++;
+      maxSteps++;
+      messages.push({ role: 'system', content: finishReason === 'length' ? OUTPUT_LIMIT_NOTE : EMPTY_NOTE });
+      continue;
+    }
     if (!calls.length) {
       finalText = stepText;
       break;
     }
+    // the calls came through but the turn was cut off: the last one may be incomplete
+    const cutOff = finishReason === 'length';
 
     // Keep ids unique even when a model reuses them.
     const seen = new Set<string>();
@@ -215,8 +250,43 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
     for (const { call, r } of results) {
       messages.push({ role: 'tool', toolCallId: call.id, name: call.name, content: r.content.slice(0, 24_000) });
     }
+    if (cutOff) messages.push({ role: 'system', content: OUTPUT_LIMIT_NOTE });
     finishReason = 'tool_calls';
   }
+
+  if (finishReason === 'tool_calls' && o.handoff && !o.signal.aborted) {
+    // Out of steps with work still going: hand it on instead of stopping halfway.
+    const note = await o.handoff(messages).catch(() => null);
+    if (note) {
+      handedOff = true;
+      const sep = text && !/\s$/.test(text) ? '\n\n' : '';
+      text += sep + note;
+      o.onEvent({ type: 'delta', text: sep + note });
+      finalText = note;
+      finishReason = 'handoff';
+    } else {
+      // could not hand it on: one last step without tools, saying honestly where things stand
+      let stepText = '';
+      for await (const chunk of o.provider.streamChat({
+        model: o.model,
+        messages: [...messages, { role: 'system', content: BUDGET_NOTE }],
+        maxOutputTokens: o.maxOutputTokens,
+        temperature: o.temperature,
+        signal: o.signal,
+      })) {
+        if (chunk.type === 'delta') {
+          stepText += chunk.text;
+          o.onEvent({ type: 'delta', text: chunk.text });
+        } else if (chunk.type === 'usage') {
+          inputTokens += chunk.inputTokens ?? 0;
+          outputTokens += chunk.outputTokens ?? 0;
+        }
+      }
+      text += stepText;
+      finalText = stepText;
+      finishReason = 'stop';
+    }
+  }
   const reply = (kept + finalText).trim() || lastInterim.trim();
-  return { text, steps, toolCalls, finishReason, inputTokens, outputTokens, displays, servedBy, reply, failedTools };
+  return { text, steps, toolCalls, finishReason, inputTokens, outputTokens, displays, servedBy, reply, failedTools, handedOff };
 }

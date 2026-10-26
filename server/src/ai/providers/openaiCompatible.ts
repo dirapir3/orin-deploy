@@ -1,5 +1,6 @@
 import { AppError } from '../../errors.js';
 import { providerFetch, withTimeout, type FetchLike } from '../http.js';
+import { lowerOutputBudget, outputCap } from '../outputCap.js';
 import { readSSE } from '../sse.js';
 import type {
   ChatChunk,
@@ -141,16 +142,22 @@ export class OpenAICompatibleChatProvider implements ChatProvider {
     if (this.gate) await this.gate.acquire(req.signal);
     try {
       const retries = this.opts.rateLimitRetries ?? 0;
+      let budget = Math.min(req.maxOutputTokens, outputCap(this.opts.baseUrl, req.model));
       for (let attempt = 0; ; attempt++) {
         let yielded = false;
         try {
-          for await (const chunk of this.streamChatOnce(req)) {
+          for await (const chunk of this.streamChatOnce({ ...req, maxOutputTokens: budget })) {
             yielded = true;
             yield chunk;
           }
           return;
         } catch (err) {
           const e = err as AppError;
+          const lower = yielded ? null : lowerOutputBudget(budget, err);
+          if (lower) {
+            budget = lower;
+            continue;
+          }
           if (yielded || attempt >= retries || !(e instanceof AppError) || e.code !== 'provider_rate_limited' || e.retryable === false) throw err;
           await sleep((this.opts.rateLimitBackoffMs ?? 2000) * 2 ** attempt, req.signal);
         }
@@ -161,7 +168,9 @@ export class OpenAICompatibleChatProvider implements ChatProvider {
   }
 
   private async *streamChatOnce(req: ChatRequest): AsyncIterable<ChatChunk> {
-    const signal = withTimeout(req.signal, this.opts.timeoutMs);
+    // An agent step with tools can stream nothing for a long time and then a whole file at once
+    // (Gemini sends a tool call in one piece), so it gets minutes, not the chat timeout.
+    const signal = withTimeout(req.signal, req.tools?.length ? Math.max(this.opts.timeoutMs, 300_000) : this.opts.timeoutMs);
     const body: Record<string, unknown> = {
       model: req.model,
       messages: req.messages.map((m) => {

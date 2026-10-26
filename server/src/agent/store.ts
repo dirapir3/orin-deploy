@@ -639,8 +639,8 @@ export class AgentStore {
   }
 
   // ---- inbox (messages the agent sends to the user's chat: task results, reminders, questions)
-  addInbox(owner: string, kind: string, title: string, text: string, refId: string | null = null): InboxItem {
-    const id = randomUUID();
+  addInbox(owner: string, kind: string, title: string, text: string, refId: string | null = null, id: string = randomUUID()): InboxItem {
+    if (this.get('SELECT id FROM inbox WHERE id = ?', id)) id = randomUUID();
     const now = Date.now();
     this.run('INSERT INTO inbox (id, owner, kind, title, text, ref_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, owner, kind, title.slice(0, 200), text.slice(0, 20_000), refId, now);
     return { id, owner, kind, title: title.slice(0, 200), text: text.slice(0, 20_000), refId, createdAt: now };

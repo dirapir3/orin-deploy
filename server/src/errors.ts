@@ -98,6 +98,9 @@ export function providerHttpError(status: number, providerName: string, bodySnip
     if (lower.includes('content') && (lower.includes('policy') || lower.includes('filter'))) {
       return new AppError('content_filtered', 'The request was blocked by the provider content policy.');
     }
+    if (/max_tokens|max_completion_tokens|max_output_tokens|maxoutputtokens|output tokens|completion tokens/.test(lower)) {
+      return new AppError('provider_bad_request', `${providerName} rejected the output token budget (HTTP ${status}).`, { retryable: false });
+    }
     return new AppError('provider_bad_request', `${providerName} could not process this request (HTTP ${status}). Check the model name and input.`, {
       retryable: false,
     });
