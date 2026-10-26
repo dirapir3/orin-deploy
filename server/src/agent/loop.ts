@@ -159,6 +159,15 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
 
   // what this run built, checked and failed (agent/craft.ts): no unverified build or hidden failure at the end
   const tracker = new WorkTracker(o.tools.map((t) => t.name));
+  // a run resumed after a restart (or continued in the background) keeps what it already built and checked
+  for (const m of o.messages) {
+    for (const c of m.role === 'assistant' ? (m.toolCalls ?? []) : []) {
+      const res = o.messages.find((x) => x.role === 'tool' && x.toolCallId === c.id)?.content ?? '';
+      let a: unknown = {};
+      try { a = JSON.parse(c.arguments || '{}'); } catch { /* keep {} */ }
+      tracker.record(c.name, a, !/^(error|failed|not run yet)/i.test(res.trim()), res);
+    }
+  }
   let recoveries = 0;
   let emptyNudges = 0;
   let handedOff = false;
@@ -259,7 +268,9 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
         }
         o.onEvent({ type: 'tool_start', id: call.id, name: call.name, label: friendlyLabel(call.name, args, label), args });
         const started = Date.now();
-        const r = await executeTool(tool, call, o.ctx, o.toolTimeoutMs);
+        // shipping (publishing a site, building an APK) waits until the screens were looked at, once per run
+        const held = tracker.preflight(call.name, args);
+        const r = held ? ({ ok: true, content: held, summary: 'Checking the design first' } as Awaited<ReturnType<typeof executeTool>>) : await executeTool(tool, call, o.ctx, o.toolTimeoutMs);
         if (r.display) displays.push(r.display);
         if (!r.ok) failedTools.push(call.name);
         o.onEvent({ type: 'tool_end', id: call.id, name: call.name, ok: r.ok, summary: friendlySummary(call.name, r.ok, r.summary), display: r.display, durationMs: Date.now() - started });

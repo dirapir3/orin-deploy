@@ -20,6 +20,7 @@ export const WORK_METHOD: string[] = [
   'When something cannot be done, say plainly what failed, what you tried, and the one next step the user can take. A partial result is labelled as partial.',
   'Facts you bring in (prices, dates, specs, news) come from a tool result in this conversation, from the primary source when there is one. Never invent a link.',
   'Answer what was asked and stop. No unrequested advice, no offers stacked at the end.',
+  'Final replies are clean: plain sentences, the link or result first, no emojis, no headings, no marketing tone, and no rundown of every feature you built.',
   'Keep improving yourself: when you solved something only after a failure, found a better way, or the user corrected your work or taste, save the reusable rule with learn_lesson. Your saved lessons are listed in this prompt; follow them.',
 ];
 
@@ -44,6 +45,7 @@ export const DESIGN_STANDARDS: string[] = [
   '- Components: rounded corners (10-16px), subtle borders or soft shadows, cards for grouped content, buttons at least 44px tall with clear hover, active and :focus-visible states, smooth 150-250ms transitions, inputs with visible labels. Use inline SVG icons (no emoji as icons), real-looking content (no lorem ipsum unless asked), and images with alt text.',
   '- Pages people land on get a strong hero (headline, one-line value, primary action), then clear sections. Apps and tools get a clean app shell: top bar, focused main area, obvious primary action, empty and loading states, and data saved in localStorage when there is no server.',
   '- Code quality: separate style.css and app.js for anything non-trivial, no console errors, every button does something, works offline once loaded when it can.',
+  '- Content: use the facts the user gave (name, place, hours, prices). Do not invent menus, prices, reviews, phone numbers or addresses; where real details are missing, keep the section short and clearly ask for them in your reply. No forms that submit nowhere: link to email, phone or WhatsApp instead unless a real backend exists.',
   '- Phone apps (Capacitor or Expo): design for a 390px screen first, safe-area padding, bottom-reachable primary actions, 44px touch targets, native-feeling motion.',
   'After building or changing anything visual, call review_design on it, fix every high and medium issue it reports, and review again (up to three rounds) before you share the link or build the APK.',
 ];
@@ -74,6 +76,7 @@ export function craftLines(tools: string[], mode: 'chat' | 'voice' | 'task'): st
 const UI_FILE = /\.(html?|css|jsx|tsx|vue|svelte)$/i;
 const CODE_FILE = /\.(m?js|cjs|ts|py|sh|go|rs|java|kt|rb|php)$/i;
 const VERIFY_UI = new Set(['review_design']);
+const SHIP_CMD = /assemble(Debug|Release)|bundleRelease|\bcap (sync|build|copy)\b|eas build|expo (export|prebuild)|build:apk|orin-(android|capacitor)-build/i;
 const LOOKUP = /^(web_search|news_search|deep_research|fetch_page|browse|recall|task_status|datetime|list_|get_|read_|search_|sandbox_read_file|sandbox_list_files|sandbox_live_view)/;
 const RUNS_CODE = new Set(['sandbox_run', 'run_code', 'sandbox_job', 'review_design', 'preview_site', 'check_site', 'publish_site', 'sandbox_browser']);
 
@@ -99,6 +102,7 @@ export class WorkTracker {
   private recovered = '';
   private failedOnce = new Set<string>();
   private learned = false;
+  private held = false;
   private askedToLearn = false;
   private readonly canLearn: boolean;
   private readonly canReview: boolean;
@@ -140,6 +144,19 @@ export class WorkTracker {
     if (n === 2) return `${name} failed twice with exactly the same arguments. Do not call it the same way again: read the error, change the input or use a different approach.`;
     if (this.streak === 3) return 'Three tool calls in a row have failed. Step back: re-read the errors, find the real cause, and pick a different route (another tool, a simpler approach, or a smaller step). If it truly cannot be done, stop and tell the user plainly what failed and what you tried.';
     return null;
+  }
+
+  /**
+   * Called before a tool runs. Shipping a page or app (publish_site, an APK/web build) whose files
+   * changed since the last review_design is held once, with a note to review it first.
+   */
+  preflight(name: string, args: unknown): string | null {
+    if (!this.uiDirty || !this.canReview || this.held) return null;
+    const cmd = args && typeof args === 'object' && typeof (args as Record<string, unknown>).command === 'string' ? ((args as Record<string, unknown>).command as string) : '';
+    const ships = name === 'publish_site' || (/^sandbox_(run|job)$/.test(name) && SHIP_CMD.test(cmd));
+    if (!ships) return null;
+    this.held = true;
+    return `NOT RUN YET: ${name === 'publish_site' ? 'publishing' : 'this build'} is on hold because the page/app files changed and you have not looked at the result. Call review_design on it first (site for a workspace site, path for a folder on your computer), fix every high and medium issue, then call ${name} again.`;
   }
 
   /**
