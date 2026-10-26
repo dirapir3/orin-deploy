@@ -119,7 +119,7 @@ export class GeminiVoiceProvider implements VoiceProvider {
     this.fetchImpl = o.fetchImpl ?? fetch;
     this.base = (o.baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
     this.sttModels = o.sttModels?.length ? o.sttModels : ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.5-flash', 'gemini-3.8-flash'];
-    this.ttsModels = o.ttsModels?.length ? o.ttsModels : ['gemini-2.5-flash-preview-tts', 'gemini-3.1-flash-tts-preview', 'gemini-3.8-flash-tts'];
+    this.ttsModels = o.ttsModels?.length ? o.ttsModels : ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts', 'gemini-3.8-flash-tts'];
     this.sttModel = this.sttModels[0]!;
     this.supportsTts = o.tts !== false;
     this.ttsModel = this.supportsTts ? this.ttsModels[0]! : '';
@@ -169,9 +169,11 @@ export class GeminiVoiceProvider implements VoiceProvider {
         else err = providerHttpError(res.status, `Google Gemini ${what}`, snippet);
         sharedKeyHealth.recordFail(keyId(key), Date.now(), err.code, err.message);
         last = err;
-        if (res.status === 404 || res.status === 503) {
+        // a TTS model that tried to answer a short line instead of reading it: the next model reads it
+        const wroteText = res.status === 400 && /tried to generate text|only be used for TTS/i.test(snippet);
+        if (res.status === 404 || res.status === 503 || wroteText) {
           // the model is missing or overloaded for everyone: move to the next model
-          this.modelCooling.set(model, Date.now() + 60_000);
+          if (!wroteText) this.modelCooling.set(model, Date.now() + 60_000);
           break;
         }
         if (!RETRYABLE.has(err.code)) throw err;
