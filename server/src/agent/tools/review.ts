@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ImageInput } from '../../ai/types.js';
 import { lintDesign, parseReview, REVIEW_RUBRIC, sortIssues, type DesignIssue } from '../craft.js';
+
 import { safeFetch } from '../net.js';
 import { planSite } from '../sites.js';
 import { SANDBOX_WORKDIR, sandboxPath } from '../sandbox/types.js';
@@ -21,6 +22,9 @@ const SHOT_DIR = `${SANDBOX_WORKDIR}/screenshots`;
 
 export const REVIEW_PY = String.raw`#!/usr/bin/env python3
 import base64, http.server, json, os, socketserver, sys, threading
+
+/** The visual score a build needs to pass (scored against the design skill in agent/designKit.ts). */
+export const PASS_SCORE = 8;
 from playwright.sync_api import sync_playwright
 
 METRICS = r"""
@@ -225,7 +229,7 @@ async function critique(ctx: ToolContext, images: ImageInput[], focus: string | 
 export const reviewDesignTool = defineTool({
   name: 'review_design',
   description:
-    'Look at a page or app screen you built before calling it done, like a designer would. It opens it in a browser at phone (390px) and desktop (1280px) sizes, takes screenshots, checks for sideways scrolling, default fonts, low contrast, tiny buttons, broken images, script errors and dated HTML, and scores the screenshots against a professional design standard. ' +
+    'Look at a page or app screen you built before calling it done, like a designer would. It opens it in a browser at phone (390px) and desktop (1280px) sizes, takes screenshots, checks for sideways scrolling, default fonts, low contrast, tiny buttons, broken images, script errors and dated HTML, and scores the screenshots against your design skill (passes at 8/10). ' +
     'Give exactly one of: site (a site folder or name in your workspace, as for publish_site), path (a folder or .html file on your sandbox computer, e.g. a Vite dist folder or the web app you will package as an APK), or url (a public link, or http://localhost:PORT for a server running on your computer). ' +
     'Fix every high and medium issue, then review again (up to three rounds) before sharing the result. The screenshots are saved on your computer under screenshots/ if the user should see them (send with sandbox_save).',
   schema: z.object({
@@ -312,7 +316,7 @@ export const reviewDesignTool = defineTool({
     const highs = list.filter((i) => i.severity === 'high').length;
     const meds = list.filter((i) => i.severity === 'medium').length;
     const score = vision?.score ?? null;
-    const pass = highs === 0 && meds <= 1 && (score === null || score >= 7);
+    const pass = highs === 0 && meds <= 1 && (score === null || score >= PASS_SCORE);
     const shots = (rendered?.views ?? []).filter((v) => v.shot).map((v) => v.shot!.replace(`${SANDBOX_WORKDIR}/`, ''));
     const lines = [
       pass ? 'PASSED the design review.' : 'NOT READY: fix the issues below, then run review_design again.',

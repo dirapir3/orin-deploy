@@ -25,6 +25,9 @@ const CODING = new Set([
   'open_site',
   'preview_site',
   'check_site',
+  'design_kit',
+  'study_reference',
+  'compare_to_reference',
 ]);
 
 export function isCodingTool(name: string): boolean {
