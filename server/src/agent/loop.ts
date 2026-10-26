@@ -224,7 +224,8 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
           o.onEvent({ type: 'interim', text: /\s$/.test(stepText) ? stepText : `${stepText}\n\n` });
           if (!/\s$/.test(stepText)) text += '\n\n';
         }
-        messages.push({ role: 'system', content: gate });
+        // as a user-side note: Gemini drops mid-chat system messages, and a chat ending on the model's own turn is a 400
+        messages.push({ role: 'user', content: `[Note from the Orin system, not from the user] ${gate}` });
         maxSteps++;
         continue;
       }
