@@ -96,6 +96,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     agent.ask(owner, input, {
       signal: controller.signal,
       timeoutMs: 10 * 60_000,
+      linkId: `reply:${run.id}`,
       onCreated: (p) => sse(res, 'prompt', { id: p.id, kind: p.kind, title: p.title, body: p.body, headline: p.headline, content: p.content, url: p.url, secret: p.secret, fields: p.fields, choices: p.choices, tool: p.tool, expiresAt: p.expiresAt }),
     });
   try {

@@ -200,8 +200,9 @@ export class AgentRuntime {
    * streamed to the open conversation (onCreated); in background tasks it also goes to the inbox
    * so the phone notifies the user.
    */
-  ask(owner: string, input: AskInput, o: { signal: AbortSignal; timeoutMs: number; taskId?: string; onCreated?: (p: PromptRec) => void }): Promise<AskResult> {
-    const p = this.store.createPrompt(owner, { kind: input.kind, title: input.title, body: input.body, headline: input.headline, content: input.content, url: input.url, secret: input.secret, fields: input.fields, choices: input.choices, taskId: o.taskId ?? null, tool: input.tool ?? null, expiresAt: Date.now() + o.timeoutMs });
+  ask(owner: string, input: AskInput, o: { signal: AbortSignal; timeoutMs: number; taskId?: string; linkId?: string; onCreated?: (p: PromptRec) => void }): Promise<AskResult> {
+    // linkId: the Activity id a chat reply's ask belongs to ("reply:<run id>"), so its task page shows it under Input required
+    const p = this.store.createPrompt(owner, { kind: input.kind, title: input.title, body: input.body, headline: input.headline, content: input.content, url: input.url, secret: input.secret, fields: input.fields, choices: input.choices, taskId: o.taskId ?? o.linkId ?? null, tool: input.tool ?? null, expiresAt: Date.now() + o.timeoutMs });
     if (o.taskId) {
       this.store.addTaskEvent(o.taskId, 'waiting', `Waiting for you: ${input.title}`);
       this.store.addInbox(owner, input.kind === 'approval' ? 'approval' : 'question', input.kind === 'approval' ? `Approve? ${input.title}` : input.title, input.body, p.id);

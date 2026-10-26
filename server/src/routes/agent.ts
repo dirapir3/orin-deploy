@@ -8,6 +8,7 @@ import { parseBody } from './util.js';
 import { capabilityReport } from '../agent/capabilities.js';
 import { computeNextRun } from '../agent/tools/tasks.js';
 import { isValidTimezone } from '../agent/cron.js';
+import { parseWhen, whenTextFor, WhenError, type WhenResult } from '../agent/whenParse.js';
 import { listConnectors, googleAuthUrl, googleConfigured } from '../agent/connectors.js';
 import { connectTokenApp, tokenApp, type TokenAppId } from '../agent/tokenApps.js';
 import { requestBaseUrl } from './agentChat.js';
@@ -26,10 +27,29 @@ const TaskBody = z.object({
   saveAsNote: z.boolean().optional(),
   conversationId: z.string().max(80).optional(),
 });
-const SkillBody = z.object({ name: z.string().trim().min(2).max(80), description: z.string().max(300).default(''), instructions: z.string().trim().min(5).max(8000) });
+// name is optional (the New skill form marks it so): a blank one is taken from the instructions
+const SkillBody = z.object({ name: z.string().trim().max(80).default(''), description: z.string().max(300).default(''), instructions: z.string().trim().min(5, 'Add instructions for this skill.').max(8000) });
+
+/** A short name from the first words of some instructions ("Check my inbox and …" -> "Check my inbox and"). */
+function nameFrom(text: string, max = 48): string {
+  const first = text.replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/)[0] ?? '';
+  const words = first.replace(/[.!?:;,]+$/, '').split(' ');
+  let out = '';
+  for (const w of words.slice(0, 7)) {
+    if ((out + ' ' + w).trim().length > max) break;
+    out = (out + ' ' + w).trim();
+  }
+  out = out || first.slice(0, max);
+  // don't end on a joining word ("Check my calendar for the week and")
+  out = out.replace(/(\s+(and|or|the|a|an|to|for|of|with|in|on|at|my|your|then))+$/i, '') || out;
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
 const ScheduleBody = z
   .object({
-    title: z.string().trim().min(2).max(120),
+    /** optional in the New schedule form: a blank one is taken from "What to run" */
+    title: z.string().trim().max(120).default(''),
+    /** "When to run" in plain words ("Weekdays at 8 AM"); the server reads it into cron / interval / once */
+    when: z.string().trim().max(200).optional(),
     prompt: z.string().trim().max(8000).default(''),
     skillId: z.string().optional(),
     cron: z.string().max(100).optional(),
@@ -39,11 +59,12 @@ const ScheduleBody = z
     timezone: z.string().max(60).default('UTC'),
     enabled: z.boolean().default(true),
   })
-  .refine((v) => v.cron || v.intervalSec || v.runAt, { message: 'Give a time: once, cron or intervalSec' })
-  .refine((v) => v.prompt || v.skillId, { message: 'Give a prompt or a skill' });
+  .refine((v) => v.when || v.cron || v.intervalSec || v.runAt, { message: 'Say when it should run, for example "Weekdays at 8 AM".' })
+  .refine((v) => v.prompt || v.skillId, { message: 'Add what it should do when it runs.' });
 const SchedulePatch = z.object({
   enabled: z.boolean().optional(),
-  title: z.string().trim().min(2).max(120).optional(),
+  when: z.string().trim().max(200).optional(),
+  title: z.string().trim().max(120).optional(),
   prompt: z.string().max(8000).optional(),
   cron: z.string().trim().max(100).nullable().optional(),
   intervalSec: z.number().int().min(60).max(31 * 86400).nullable().optional(),
@@ -166,14 +187,26 @@ export function agentRouter(deps: Deps): Router {
 
   // ---- skills
   r.get('/agent/skills', (req, res) => res.json({ skills: st.listSkills(owner(req)) }));
+  const skillName = (b: { name: string; instructions: string }) => {
+    const name = (b.name || nameFrom(b.instructions)).slice(0, 80);
+    if (name.length < 2) throw new AppError('validation_error', 'Give the skill a name.');
+    return name;
+  };
   r.post('/agent/skills', (req, res) => {
     const b = parseBody(SkillBody, req.body);
-    res.status(201).json({ skill: st.upsertSkill(owner(req), b) });
+    const name = skillName(b);
+    // creating never overwrites: a skill with that name already exists -> say so instead of replacing it
+    const same = st.listSkills(owner(req)).find((k) => k.name.toLowerCase() === name.toLowerCase());
+    if (same) throw new AppError('validation_error', `You already have a skill called "${same.name}". Pick another name, or edit that one.`);
+    res.status(201).json({ skill: st.upsertSkill(owner(req), { ...b, name }) });
   });
   r.post('/agent/skills/:id', (req, res) => {
     const b = parseBody(SkillBody, req.body);
     if (!st.getSkill(owner(req), idParam(req))) throw new AppError('not_found', 'Skill not found.');
-    res.json({ skill: st.upsertSkill(owner(req), { ...b, id: idParam(req) }) });
+    const name = skillName(b);
+    const same = st.listSkills(owner(req)).find((k) => k.id !== idParam(req) && k.name.toLowerCase() === name.toLowerCase());
+    if (same) throw new AppError('validation_error', `You already have a skill called "${same.name}". Pick another name.`);
+    res.json({ skill: st.upsertSkill(owner(req), { ...b, name, id: idParam(req) }) });
   });
   r.post('/agent/skills/:id/run', (req, res) => {
     if (!agent.enabled) throw new AppError('provider_not_configured', 'No tool-capable AI model is configured on the server.');
@@ -190,26 +223,66 @@ export function agentRouter(deps: Deps): Router {
   });
 
   // ---- schedules (routines)
-  r.get('/agent/schedules', (req, res) => res.json({ schedules: st.listSchedules(owner(req)) }));
+  /** each schedule with its timing in words (what the edit form's "When to run" shows) */
+  const withWhen = <S extends { cron: string | null; intervalSec: number | null; nextRunAt: number; timezone: string }>(s: S) => ({ ...s, whenText: whenTextFor(s) });
+  const readWhen = (text: string, timezone: string): WhenResult => {
+    try {
+      return parseWhen(text, timezone, Date.now(), deps.config.agent.scheduleMinIntervalSec);
+    } catch (e) {
+      if (e instanceof WhenError) throw new AppError('validation_error', e.message);
+      throw e;
+    }
+  };
+  r.get('/agent/schedules', (req, res) => res.json({ schedules: st.listSchedules(owner(req)).map(withWhen) }));
+  // live read-back under "When to run" while the user types (nothing is saved)
+  r.post('/agent/schedules/preview-when', (req, res) => {
+    const b = parseBody(z.object({ when: z.string().max(200), timezone: z.string().max(60).default('UTC') }), req.body);
+    if (!isValidTimezone(b.timezone)) throw new AppError('validation_error', 'Unknown timezone.');
+    try {
+      const w = parseWhen(b.when, b.timezone, Date.now(), deps.config.agent.scheduleMinIntervalSec);
+      const nextRunAt = computeNextRun({ cron: w.kind === 'cron' ? w.cron : null, intervalSec: w.kind === 'interval' ? w.intervalSec : null, timezone: b.timezone, runAt: w.kind === 'once' ? w.runAt : null }, Date.now());
+      res.json({ ok: true, kind: w.kind, summary: w.summary, repeats: w.kind !== 'once', nextRunAt });
+    } catch (e) {
+      res.json({ ok: false, error: (e as Error).message });
+    }
+  });
   r.post('/agent/schedules', (req, res) => {
     const b = parseBody(ScheduleBody, req.body);
     if (!isValidTimezone(b.timezone)) throw new AppError('validation_error', 'Unknown timezone.');
     if (b.skillId && !st.getSkill(owner(req), b.skillId)) throw new AppError('not_found', 'Skill not found.');
-    const intervalSec = b.intervalSec ? Math.max(b.intervalSec, deps.config.agent.scheduleMinIntervalSec) : null;
+    const w = b.when ? readWhen(b.when, b.timezone) : null;
+    const cron = w ? (w.kind === 'cron' ? w.cron : null) : (b.cron ?? null);
+    const rawInterval = w ? (w.kind === 'interval' ? w.intervalSec : null) : (b.intervalSec ?? null);
+    const runAt = w ? (w.kind === 'once' ? w.runAt : null) : (b.runAt ?? null);
+    const intervalSec = rawInterval ? Math.max(rawInterval, deps.config.agent.scheduleMinIntervalSec) : null;
     let next: number;
     try {
-      next = computeNextRun({ cron: b.cron ?? null, intervalSec, timezone: b.timezone, runAt: b.runAt ?? null }, Date.now());
+      next = computeNextRun({ cron, intervalSec, timezone: b.timezone, runAt }, Date.now());
     } catch (e) {
       throw new AppError('validation_error', (e as Error).message);
     }
-    const s = st.createSchedule(owner(req), { title: b.title, prompt: b.prompt, skillId: b.skillId ?? null, cron: b.cron ?? null, intervalSec, timezone: b.timezone, enabled: b.enabled, nextRunAt: next });
-    res.status(201).json({ schedule: s });
+    const skill = b.skillId ? st.getSkill(owner(req), b.skillId) : null;
+    const title = (b.title || (b.prompt ? nameFrom(b.prompt, 60) : skill?.name) || 'Schedule').slice(0, 120);
+    const s = st.createSchedule(owner(req), { title, prompt: b.prompt, skillId: b.skillId ?? null, cron, intervalSec, timezone: b.timezone, enabled: b.enabled, nextRunAt: next });
+    res.status(201).json({ schedule: withWhen(s) });
   });
   r.post('/agent/schedules/:id', (req, res) => {
     const b = parseBody(SchedulePatch, req.body);
     const cur = st.getSchedule(owner(req), idParam(req));
     if (!cur) throw new AppError('not_found', 'Schedule not found.');
+    if (b.when !== undefined) {
+      // "When to run" changed in the edit form: it replaces the timing whatever it was (once <-> repeating)
+      const tzone = b.timezone ?? cur.timezone;
+      if (!isValidTimezone(tzone)) throw new AppError('validation_error', 'Unknown timezone.');
+      const w = readWhen(b.when, tzone);
+      delete (b as { when?: unknown }).when;
+      if (w.kind === 'once') Object.assign(b, { runAt: w.runAt, cron: undefined, intervalSec: undefined });
+      else Object.assign(b, { runAt: undefined, cron: w.kind === 'cron' ? w.cron : null, intervalSec: w.kind === 'interval' ? w.intervalSec : null, timezone: tzone });
+    }
+    if (b.title !== undefined && !b.title) b.title = b.prompt ? nameFrom(b.prompt, 60) : cur.title;
+    if (b.prompt !== undefined && !b.prompt.trim() && !cur.skillId) throw new AppError('validation_error', 'Add what it should do when it runs.');
     const patch: Parameters<typeof st.updateSchedule>[2] = { ...b };
+    delete (patch as { when?: unknown }).when;
     const timing = b.cron !== undefined || b.intervalSec !== undefined || b.timezone !== undefined;
     delete (patch as { runAt?: unknown }).runAt;
     if (b.runAt) {
@@ -230,7 +303,7 @@ export function agentRouter(deps: Deps): Router {
         if (cur.nextRunAt <= Date.now()) throw new AppError('validation_error', 'This one-time schedule already ran. Pick a new time to turn it back on.');
       } else patch.nextRunAt = computeNextRun(cur, Date.now());
     }
-    res.json({ schedule: st.updateSchedule(owner(req), cur.id, patch) });
+    res.json({ schedule: withWhen(st.updateSchedule(owner(req), cur.id, patch)!) });
   });
   r.delete('/agent/schedules/:id', (req, res) => {
     if (!st.deleteSchedule(owner(req), idParam(req))) throw new AppError('not_found', 'Schedule not found.');
