@@ -72,6 +72,7 @@ export function createApp(deps: Deps) {
       origin: (origin, cb) => cb(null, !origin || config.corsOrigins.includes(origin)),
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Guest-Id', 'X-Orin-Agent', 'X-Orin-AI'],
       methods: ['GET', 'POST', 'DELETE', 'PATCH', 'PUT'],
+      exposedHeaders: ['Retry-After', 'X-Orin-Voice-Fallback'],
     }),
   );
   // Separate admin hostname: the admin site and the public app/API never share a host.

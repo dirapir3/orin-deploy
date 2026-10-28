@@ -177,6 +177,9 @@ export function voiceRouter(deps: Deps) {
       });
       usage.record(req.auth, { kind: 'tts', provider: voice.id, model: voice.ttsModel, status: 'ok', units: body.text.length, durationMs: Date.now() - started });
       voiceHeaders(res, voice);
+      // the voice chosen in AI setup failed and the default read it: say so (the app shows it)
+      const fellBack = (out as { fallbackFrom?: string }).fallbackFrom;
+      if (fellBack) res.setHeader('X-Orin-Voice-Fallback', encodeURIComponent(fellBack));
       res.setHeader('Content-Type', out.mimeType);
       res.setHeader('Content-Length', String(out.audio.length));
       res.setHeader('Cache-Control', 'no-store');
@@ -214,7 +217,8 @@ export function voiceRouter(deps: Deps) {
       usage.record(req.auth, { kind: 'tts', provider: voice.id, model: stream.model, status: 'ok', units: body.text.length, durationMs: Date.now() - started });
       voiceHeaders(res, voice);
       res.setHeader('Cache-Control', 'no-store');
-      res.json({ id, path: `/v1/voice/speech/stream/${id}`, mimeType: 'audio/wav', firstAudioMs: Date.now() - started });
+      const fallbackFrom = (stream as { fallbackFrom?: string }).fallbackFrom;
+      res.json({ id, path: `/v1/voice/speech/stream/${id}`, mimeType: 'audio/wav', firstAudioMs: Date.now() - started, ...(fallbackFrom ? { fallbackFrom } : {}) });
     } catch (err) {
       if (voice) {
         usage.record(req.auth, { kind: 'tts', provider: voice.id, model: voice.ttsModel, status: 'error', durationMs: Date.now() - started, errorCode: toAppError(err).code });

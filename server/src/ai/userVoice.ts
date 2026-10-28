@@ -233,6 +233,10 @@ class UserVoice implements VoiceProvider {
     // the voice chosen in Settings wins over the character's built-in voice
     return this.voice ? { ...r, voice: this.voice } : r;
   }
+  /** The service's name, put on audio the default voice read instead (the app shows it: no silent swap). */
+  private marked<T extends object>(r: T): T & { fallbackFrom: string } {
+    return Object.assign(r, { fallbackFrom: VOICE_SERVICES.find((s) => s.id === this.svc)?.label ?? this.svc });
+  }
   private fail(e: unknown) {
     const m = friendly(this.svc, e);
     this.report(false, m);
@@ -261,7 +265,7 @@ class UserVoice implements VoiceProvider {
     } catch (e) {
       if (req.signal?.aborted || !this.fallback?.supportsTts) throw e;
       this.fail(e);
-      return this.fallback.speak(req);
+      return this.marked(await this.fallback.speak(req));
     }
   }
 
@@ -274,7 +278,7 @@ class UserVoice implements VoiceProvider {
     } catch (e) {
       if (req.signal?.aborted || !this.fallback?.supportsTts || !this.fallback.speakStream) throw e;
       this.fail(e);
-      return this.fallback.speakStream(req);
+      return this.marked(await this.fallback.speakStream(req));
     }
   }
 }
