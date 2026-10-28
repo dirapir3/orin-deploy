@@ -237,7 +237,7 @@ export const sandboxPreviewTool = defineTool({
         ? `Temporary link (works while the sandbox is open, about 10 quiet minutes): ${out.url}\nThe server answered with HTTP ${out.code}.`
         : `Nothing is answering on port ${a.port} inside the sandbox yet (curl got ${out.code || 'no answer'}). Start the server with sandbox_run background:true on 0.0.0.0:${a.port}, wait a few seconds, and try again. Do not give the user this link until it answers: ${out.url}`,
       summary: up ? 'Preview link ready' : 'Server not answering',
-      display: up ? { kind: 'page', url: out.url, title: `Preview on port ${a.port}` } : undefined,
+      display: up ? { kind: 'page', url: out.url, title: 'Preview' } : undefined,
     };
   },
 });

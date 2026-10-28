@@ -3,6 +3,13 @@ import { isValidTimezone } from '../cron.js';
 import { toPublic } from '../vault.js';
 import { deleteWsFile, listFiles, readWsFile, workspaceDir, writeWsFile } from '../workspace.js';
 import { describeDiff, diffPlan, dropPreview, fingerprint, listSites, openSite, planSite, previewPlan, publishPlan, siteBaseUrl, siteSlug, unpublishSite, type SiteDiff } from '../sites.js';
+
+/** "2 changed, 1 new": what an update changes, in counts (the approval card shows no file names). */
+function changeWords(d: SiteDiff): string {
+  if (!d.live) return 'new site';
+  const s = [d.changed.length ? `${d.changed.length} changed` : '', d.added.length ? `${d.added.length} new` : '', d.removed.length ? `${d.removed.length} removed` : ''].filter(Boolean).join(', ');
+  return s || 'no changes';
+}
 import { deployToHuggingFace, findHfToken, HF_TOKEN_HELP, hfSpaceName, HostError, verifyPublicUrl } from '../hosting.js';
 import { computeNextRun } from './tasks.js';
 import { defineTool, type ToolContext } from './types.js';
@@ -251,7 +258,8 @@ export const publishSiteTool = defineTool({
       fields: [
         { label: 'Site', value: p.plan.name },
         { label: 'Where', value: hf ? `huggingface.co/spaces/<your account>/${hfSpaceName(p.plan.name)}` : `${siteBaseUrl(ctx.services)}/v1/sites/${p.plan.slug}/` },
-        update && p.diff ? { label: 'Changes', value: describeDiff(p.diff) } : { label: 'Files', value: `${p.plan.files.length} from ${p.plan.folder ? `${p.plan.folder}/` : 'the workspace top level'}` },
+        // counts only in the approval card: no file names or folder paths (those stay in the task's steps)
+        update && p.diff ? { label: 'Changes', value: changeWords(p.diff) } : { label: 'Pages and files', value: `${p.plan.files.length}` },
       ],
     };
   },
