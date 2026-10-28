@@ -29,10 +29,10 @@ MEASURE = r"""
   const vis = el => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 2 && r.height > 2 && cs.visibility !== 'hidden' && cs.display !== 'none' && parseFloat(cs.opacity) > 0.1; };
   const pick = (el) => { if (!el) return null; const cs = getComputedStyle(el); return { text: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 70), font: cs.fontFamily.split(',')[0].replace(/["']/g, '').trim(), size: parseFloat(cs.fontSize), weight: cs.fontWeight, lh: cs.lineHeight, ls: cs.letterSpacing, transform: cs.textTransform, color: cs.color }; };
   const first = sel => [...document.querySelectorAll(sel)].find(vis);
-  const type = { body: pick(document.body), h1: pick(first('h1')), h2: pick(first('h2')), h3: pick(first('h3')), p: pick(first('main p, section p, p')), nav: pick(first('header a, nav a')) };
+  const add = (m, k, w) => { if (!k) return; m[k] = (m[k] || 0) + w; };
+  const type = { body: pick(document.body), h1: pick(first('h1')), h2: pick(first('h2')), h3: pick(first('h3')), p: pick((() => { const ps = [...document.querySelectorAll('p, li')].filter(e => vis(e) && (e.innerText || '').trim().length > 40); const c = {}; ps.forEach(e => add(c, getComputedStyle(e).fontSize, 1)); const top = Object.entries(c).sort((a, b) => b[1] - a[1])[0]; return top ? ps.find(e => getComputedStyle(e).fontSize === top[0]) : first('p'); })()), nav: pick(first('header a, nav a')) };
   const W = innerWidth, H = Math.max(document.documentElement.scrollHeight, 1);
   const bg = {}, fg = {}, radius = {}, shadow = {};
-  const add = (m, k, w) => { if (!k) return; m[k] = (m[k] || 0) + w; };
   const els = [...document.querySelectorAll('body *')].slice(0, 4000);
   for (const el of els) {
     if (!vis(el)) continue;

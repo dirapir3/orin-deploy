@@ -14,8 +14,8 @@ export const learnLessonTool = defineTool({
   name: 'learn_lesson',
   writes: true,
   description:
-    'Improve yourself: save one short, general rule you learned from your own work so every future chat, call and task uses it. Use it when you solved something only after a failure (what fixed it), found a better way to do a kind of job, or the user corrected your work, style or design. ' +
-    'Write it as an instruction to yourself, reusable beyond this one case, e.g. "Capacitor builds: run npx cap sync before gradle, or the web files are stale" or "This user wants dark, minimal designs with large type". Never include secrets, keys or private data.',
+    'Improve yourself: save one short, general rule you learned from your own work so every future chat, call and task uses it. Use it when you solved something only after a failure (what fixed it) or found a better way to do a kind of job. When the USER corrects you or tells you their taste, use remember_know_how (kind correction / preference) instead, so it keeps where it came from. ' +
+    'Write it as an instruction to yourself, reusable beyond this one case, e.g. "Capacitor builds: run npx cap sync before gradle, or the web files are stale". Never include secrets, keys or private data.',
   schema: z.object({
     lesson: z.string().min(10).max(300).describe('The rule, as an instruction to yourself'),
     topic: z.string().max(40).optional().describe('Short topic, e.g. android, design, websites, email'),

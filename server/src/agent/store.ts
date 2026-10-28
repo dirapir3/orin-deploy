@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { ensureKnowledgeTables, listKnowHow } from './knowledge.js';
 import { randomUUID } from 'node:crypto';
 import { encrypt as sealToken, decrypt as openToken } from './vault.js';
 
@@ -263,6 +264,7 @@ export class AgentStore {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000;');
     this.db.exec(SCHEMA);
+    ensureKnowledgeTables(this.db);
     // added after the first release: card details for prompts (headline, full content, page link, secret field)
     const cols = this.all('PRAGMA table_info(prompts)').map((c) => s(c.name));
     if (!cols.includes('meta')) this.db.exec("ALTER TABLE prompts ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'");
@@ -702,6 +704,8 @@ export class AgentStore {
       vault: this.listVault(owner).map((v) => ({ id: v.id, name: v.name, domain: v.domain, note: 'login details are encrypted and not exported' })),
       inbox: this.listInbox(owner, 0, 10_000),
       connections: ['google', 'github', 'notion', 'slack'].filter((p) => this.getConnection(owner, p)),
+      knowHow: listKnowHow(this, owner),
+      toolServers: listMcpServerRows(this, owner),
     };
   }
   /** Built-in apps this character has turned off (Apps page). */
@@ -714,8 +718,9 @@ export class AgentStore {
   }
 
   deleteOwner(owner: string): number {
+    ensureKnowledgeTables(this.db);
     let total = 0;
-    for (const t of ['memories', 'notes', 'reminders', 'tasks', 'schedules', 'skills', 'summaries', 'connections', 'oauth_states', 'vault', 'prompts', 'inbox', 'usage_daily', 'app_prefs']) {
+    for (const t of ['memories', 'notes', 'reminders', 'tasks', 'schedules', 'skills', 'summaries', 'connections', 'oauth_states', 'vault', 'prompts', 'inbox', 'usage_daily', 'app_prefs', 'knowledge', 'mcp_servers']) {
       total += this.run(`DELETE FROM ${t} WHERE owner = ?`, owner);
     }
     return total;
@@ -724,4 +729,9 @@ export class AgentStore {
   close() {
     this.db.close();
   }
+}
+
+/** Tool servers for the data export: names and addresses only (keys stay in the vault). */
+function listMcpServerRows(store: AgentStore, owner: string) {
+  return (ensureKnowledgeTables(store.db).prepare('SELECT name, url, created_at FROM mcp_servers WHERE owner = ?').all(owner) as Record<string, unknown>[]).map((r) => ({ name: String(r.name), url: String(r.url), createdAt: Number(r.created_at) }));
 }

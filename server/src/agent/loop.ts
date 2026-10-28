@@ -159,6 +159,8 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
 
   // what this run built, checked and failed (agent/craft.ts): no unverified build or hidden failure at the end
   const tracker = new WorkTracker(o.tools.map((t) => t.name));
+  const lastUserMsg = [...o.messages].reverse().find((m) => m.role === 'user');
+  if (lastUserMsg && typeof lastUserMsg.content === 'string') tracker.noteRequest(lastUserMsg.content);
   // a run resumed after a restart (or continued in the background) keeps what it already built and checked
   for (const m of o.messages) {
     for (const c of m.role === 'assistant' ? (m.toolCalls ?? []) : []) {

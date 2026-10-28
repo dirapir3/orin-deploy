@@ -1,3 +1,4 @@
+import { knowHowFor } from './knowledge.js';
 import type { AppConfig } from '../config.js';
 import type { ChatProvider, ProviderMessage } from '../ai/types.js';
 import { buildContext } from '../ai/context.js';
@@ -110,7 +111,10 @@ export async function buildAgentContext(
   const facts = [...relevant, ...recent.filter((m) => !relevant.some((r) => r.id === m.id))].slice(0, 25);
   // lessons she taught herself (learn_lesson) always come along, so she keeps improving
   const memories = [...facts, ...deps.store.listLessons(deps.owner).filter((l) => !facts.some((m) => m.id === l.id))];
-  const system = buildAgentSystemPrompt(body.preferences, body.mode, { ...deps.persona, memories });
+  // what the user taught her that fits this request (the last two user messages, so "do it like that" still matches)
+  const recentAsk = body.messages.filter((m) => m.role === 'user').slice(-2).map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
+  const knowHow = knowHowFor(deps.store, deps.owner, recentAsk, { incognito: deps.persona.incognito });
+  const system = buildAgentSystemPrompt(body.preferences, body.mode, { ...deps.persona, memories, knowHow });
   const out: ProviderMessage[] = [{ role: 'system', content: system }];
   if (summary) out.push({ role: 'system', content: `Summary of the earlier part of this conversation:\n${summary}` });
   out.push(...msgs);

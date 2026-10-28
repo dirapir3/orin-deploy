@@ -35,6 +35,8 @@ export interface PersonaOptions {
   inTask?: boolean;
   /** shared work picture for chat and voice (agent/workContext.ts) */
   work?: string;
+  /** what the user taught her that fits this request: corrections, references, matching skills (agent/knowledge.ts) */
+  knowHow?: string;
 }
 
 /** The user's wall-clock time as ISO 8601 with their offset, e.g. 2026-10-25T08:45:00-07:00. */
@@ -142,6 +144,7 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
   const lessons = (o.memories ?? []).filter((m) => isLesson(m.tags));
   const facts = (o.memories ?? []).filter((m) => !isLesson(m.tags));
   if (lessons.length) lines.push('', '## What you have learned from your own past work (apply these every time)', ...lessons.map((m) => `- ${m.text}`));
+  if (o.knowHow && !o.incognito) lines.push(o.knowHow);
   if (facts.length) {
     lines.push('', '## What you remember about the user (from earlier conversations)', ...facts.map((m) => `- ${m.text}`), 'Use these naturally when relevant; do not list them unprompted.');
   }
