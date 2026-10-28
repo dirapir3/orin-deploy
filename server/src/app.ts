@@ -21,6 +21,7 @@ import { chatRouter } from './routes/chat.js';
 import { filesRouter } from './routes/files.js';
 import { realtimeRouter } from './routes/realtime.js';
 import { voiceRouter } from './routes/voice.js';
+import { ttsStreams } from './ai/ttsStream.js';
 import { agentRouter } from './routes/agent.js';
 import { requestBaseUrl } from './routes/agentChat.js';
 import { AgentRuntime } from './agent/runtime.js';
@@ -168,6 +169,8 @@ export function createApp(deps: Deps) {
   // Profile > AI keys: the user's own AI keys, kept in the Secure Vault
   app.use('/v1/ai', guestOk, createRateLimiter(config, 'ai-keys', 2), aiKeysRouter(deps));
   app.use('/v1/chat', guestOk, createRateLimiter(config, 'chat'), chatRouter(deps));
+  // streaming voice clips: the random id is the permission (players cannot send auth headers)
+  app.get('/v1/voice/speech/stream/:id', createRateLimiter(config, 'voice-stream', 3), (req, res) => ttsStreams.serve(req, res));
   app.use('/v1/voice', guestOk, createRateLimiter(config, 'voice', 3), voiceRouter(deps));
   app.use('/v1/files', guestOk, createRateLimiter(config, 'files', 0.5), filesRouter(deps));
   app.use('/v1/realtime', userOnly, createRateLimiter(config, 'realtime', 0.25), realtimeRouter(deps));

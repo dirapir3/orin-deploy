@@ -40,6 +40,8 @@ export interface ChatRequest {
   temperature?: number;
   signal: AbortSignal;
   tools?: ToolSpec[];
+  /** A voice call: answering quickly matters more than thinking long (Gemini thinks minimally). */
+  fast?: boolean;
 }
 
 export type ChatChunk =
@@ -97,6 +99,12 @@ export interface VoiceProvider {
   defaultVoice(): string;
   transcribe(req: TranscribeRequest): Promise<{ text: string; durationSec?: number }>;
   speak(req: SpeechRequest): Promise<{ audio: Buffer; mimeType: string }>;
+  /** Voice as it is made: resolves at the first audio (Gemini TTS). Optional. */
+  speakStream?(req: SpeechRequest): Promise<import('./providers/geminiVoice.js').SpeechStream>;
+  /** Epoch ms until which every TTS/STT model is resting after its quota ran out (0 = available). */
+  restingUntil?(kind: 'tts' | 'stt'): number;
+  /** The provider attempts behind the last call (model;status;ms), for Server-Timing. */
+  lastTrace?: string[];
 }
 
 /** Collects a streaming response into a single string (used for titles). */

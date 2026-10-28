@@ -195,12 +195,27 @@ export class OpenAICompatibleChatProvider implements ChatProvider {
       body.tool_choice = 'auto';
     }
 
-    const res = await providerFetch(this.fetchImpl, this.displayName, `${this.opts.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders(this.opts.apiKey), ...(this.opts.extraHeaders ?? {}) },
-      body: JSON.stringify(body),
-      signal,
-    });
+    // Voice calls on Gemini: think as little as the model allows, so the first words come sooner
+    // (measured: default thinking ~2.6 s to first token on gemini-3.5-flash, minimal well under 1 s).
+    const effort = req.fast ? geminiFastEffort(this.opts.baseUrl, req.model) : null;
+    if (effort) body.reasoning_effort = effort;
+    const send = () =>
+      providerFetch(this.fetchImpl, this.displayName, `${this.opts.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(this.opts.apiKey), ...(this.opts.extraHeaders ?? {}) },
+        body: JSON.stringify(body),
+        signal,
+      });
+    let res: Response;
+    try {
+      res = await send();
+    } catch (err) {
+      // a model that rejects that effort level answers with its own default instead of failing
+      const code = (err as AppError)?.code;
+      if (!effort || signal.aborted || code === 'provider_rate_limited' || code === 'invalid_api_key' || code === 'cancelled' || code === 'timeout') throw err;
+      delete body.reasoning_effort;
+      res = await send();
+    }
     if (!res.body) throw new AppError('provider_unavailable', `${this.displayName} returned an empty stream.`);
 
     // Tool calls arrive in fragments keyed by index; assemble them and emit once complete.
@@ -400,4 +415,13 @@ export class OpenAICompatibleVoiceProvider implements VoiceProvider {
     if (audio.length === 0) throw new AppError('provider_unavailable', 'Text-to-speech returned no audio.');
     return { audio, mimeType: 'audio/mpeg' };
   }
+}
+
+/** The lowest thinking Gemini's OpenAI-compatible API accepts for this model; null for other providers. */
+export function geminiFastEffort(baseUrl: string, model: string): string | null {
+  if (!baseUrl.includes('generativelanguage.googleapis.com')) return null;
+  if (/gemini-2\.5-pro/.test(model)) return 'low';
+  if (/gemini-2\.5/.test(model)) return 'none';
+  // gemini-3.x and the -latest aliases: 'none' is rejected (400), 'minimal' is accepted
+  return 'minimal';
 }

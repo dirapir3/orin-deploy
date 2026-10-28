@@ -107,6 +107,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       tools,
       ctx: toolCtx,
       maxSteps: body.mode === 'voice' ? Math.min(config.agent.maxSteps, 12) : config.agent.maxSteps,
+      fast: body.mode === 'voice',
       maxOutputTokens: config.agent.maxOutputTokens,
       toolTimeoutMs: config.agent.toolTimeoutMs,
       signal: controller.signal,

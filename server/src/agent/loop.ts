@@ -24,6 +24,8 @@ export interface RunAgentOptions {
   maxSteps: number;
   maxOutputTokens: number;
   temperature?: number;
+  /** voice calls: the model thinks as little as it can so the first words come sooner */
+  fast?: boolean;
   toolTimeoutMs: number;
   signal: AbortSignal;
   onEvent: (ev: AgentEvent) => void;
@@ -189,6 +191,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       maxOutputTokens: o.maxOutputTokens,
       temperature: o.temperature,
       signal: o.signal,
+      fast: o.fast,
       tools: last || !specs.length ? undefined : specs,
     })) {
       if (chunk.type === 'delta') {
@@ -315,6 +318,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
         maxOutputTokens: o.maxOutputTokens,
         temperature: o.temperature,
         signal: o.signal,
+        fast: o.fast,
       })) {
         if (chunk.type === 'delta') {
           stepText += chunk.text;
