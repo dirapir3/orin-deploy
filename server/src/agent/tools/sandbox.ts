@@ -12,8 +12,8 @@ import { redactSecrets, resolveSecrets, secretsSchema, type SecretRefs } from '.
  * steps. Hidden from the model until a sandbox provider is configured.
  */
 
-export function sandboxNeeds(svc: AgentServices): string | null {
-  return svc.sandboxes ? svc.sandboxes.needs() : 'a sandbox provider (E2B_API_KEY)';
+export function sandboxNeeds(svc: AgentServices, owner?: string): string | null {
+  return svc.sandboxes ? svc.sandboxes.needs(owner) : 'a sandbox provider (E2B_API_KEY)';
 }
 
 export function withSandbox<T>(ctx: ToolContext, fn: (s: SandboxSession) => Promise<T>): Promise<T> {
@@ -82,7 +82,7 @@ export const sandboxRunTool = defineTool({
     secrets: secretsSchema,
   }),
   label: (a) => `Running ${short(a.command, 40)}…`,
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   timeoutMs: 660_000,
   approval: (a) => {
     const why = commandRisk(a.command) ?? (a.secrets?.length ? secretNetRisk(a.command) : null);
@@ -127,7 +127,7 @@ export const sandboxWriteFileTool = defineTool({
     append: z.boolean().optional().describe('add to the end of the file instead of replacing it'),
   }),
   label: (a) => `Writing ${short(a.path, 40)}…`,
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   handler: async (a, ctx) => {
     const p = sandboxPath(a.path);
     let content = a.content;
@@ -149,7 +149,7 @@ export const sandboxReadFileTool = defineTool({
   description: `Read a text file from your sandbox computer (relative paths are inside ${SANDBOX_WORKDIR}). Long files are cut at 20,000 characters.`,
   schema: z.object({ path: z.string().min(1).max(300) }),
   label: (a) => `Reading ${short(a.path, 40)}…`,
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   handler: async (a, ctx) => {
     const p = sandboxPath(a.path);
     const data = await withSandbox(ctx, (s) => s.readFile(p));
@@ -163,7 +163,7 @@ export const sandboxListFilesTool = defineTool({
   description: `List files in a folder of your sandbox computer (default ${SANDBOX_WORKDIR}), with sizes. node_modules, .git and caches are left out.`,
   schema: z.object({ path: z.string().max(300).optional() }),
   label: () => 'Listing sandbox files…',
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   handler: async (a, ctx) => {
     const dir = sandboxPath(a.path);
     const files = await withSandbox(ctx, (s) => listRemote(s, dir, 300));
@@ -184,7 +184,7 @@ export const sandboxSaveTool = defineTool({
     to: z.string().min(1).max(200).describe('Destination folder in the user\'s files, e.g. "sites/portfolio" or "projects/report"'),
   }),
   label: (a) => `Saving ${short(a.path, 30)}…`,
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   writes: true,
   handler: async (a, ctx) => {
     const p = sandboxPath(a.path);
@@ -221,7 +221,7 @@ export const sandboxPreviewTool = defineTool({
     'Get a temporary public https link to a server running on your sandbox computer (start it first with sandbox_run background:true, listening on 0.0.0.0). The link stops working when the sandbox closes, so for a lasting link save the built files with sandbox_save and use publish_site.',
   schema: z.object({ port: z.number().int().min(1).max(65535) }),
   label: (a) => `Opening port ${a.port}…`,
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   handler: async (a, ctx) => {
     const out = await withSandbox(ctx, async (s) => {
       if (!s.publicUrl) return null;
@@ -247,7 +247,7 @@ export const sandboxCloseTool = defineTool({
   description: `Save changed files (to the user's files under ${SAVE_PREFIX}/) and shut your sandbox computer down now. It also closes by itself after about 10 quiet minutes, so only use this when the user asks or the work is clearly finished.`,
   schema: z.object({}),
   label: () => 'Closing the sandbox…',
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   handler: async (_a, ctx) => {
     const closed = await ctx.services.sandboxes!.close(ctx.owner, 'Orin finished the work');
     return { content: closed ? `The sandbox is closed; changed files were saved under ${SAVE_PREFIX}/.` : 'No sandbox was open.', summary: closed ? 'Sandbox closed' : 'No sandbox open' };

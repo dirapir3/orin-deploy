@@ -7,6 +7,8 @@ import { AppError, toAppError } from '../errors.js';
 import { SpeechRequestSchema } from '../schemas.js';
 import { parseBody } from './util.js';
 import { ttsStreams } from '../ai/ttsStream.js';
+import { voiceSetups } from '../ai/userVoice.js';
+import { requesterKey } from '../middleware/auth.js';
 
 const AUDIO_TYPES = new Set([
   'audio/mp4',
@@ -61,8 +63,10 @@ export function voiceRouter(deps: Deps) {
    * speech, speech/start, voices) goes through it, so a setting changes real calls. A provider
    * without speakStream/restingUntil simply makes the app use the whole-clip /speech path.
    */
-  const resolveVoice = async (_req: import('express').Request, _kind: 'stt' | 'tts'): Promise<NonNullable<typeof providers.voice>> => {
-    return requireVoice();
+  const resolveVoice = async (req: import('express').Request, kind: 'stt' | 'tts'): Promise<NonNullable<typeof providers.voice>> => {
+    // AI setup > Voice (ai/userVoice.ts); null = keep the server default. Sync, cached: no added delay.
+    const mine = deps.agent ? voiceSetups(deps.agent.store).resolve(requesterKey(req), kind, providers.voice ?? null) : null;
+    return mine ?? requireVoice();
   };
 
   /** Which provider attempts a voice call made (Server-Timing) and when to retry after a limit. */

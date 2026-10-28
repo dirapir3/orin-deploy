@@ -244,7 +244,7 @@ export const reviewDesignTool = defineTool({
   handler: async (a, ctx) => {
     const given = [a.site, a.path, a.url].filter(Boolean).length;
     if (given !== 1) return { ok: false, content: 'Give exactly one of site, path or url.', summary: 'Bad arguments' };
-    const haveSandbox = !!ctx.services.sandboxes && ctx.services.sandboxes.needs() === null;
+    const haveSandbox = !!ctx.services.sandboxes && ctx.services.sandboxes.needs(ctx.owner) === null;
     const issues: DesignIssue[] = [];
     let target = '';
     let staticSrc: { html: string; css: string } | null = null;

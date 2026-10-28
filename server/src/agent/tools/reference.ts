@@ -329,7 +329,7 @@ export const studyReferenceTool = defineTool({
   label: (a) => `Studying ${a.site.slice(0, 40)}…`,
   timeoutMs: 300_000,
   handler: async (a, ctx) => {
-    if (!ctx.services.sandboxes || ctx.services.sandboxes.needs() !== null) return { ok: false, content: 'Studying a site needs your computer (sandbox), which is not set up. Use fetch_page for its text instead.', summary: 'No computer' };
+    if (!ctx.services.sandboxes || ctx.services.sandboxes.needs(ctx.owner) !== null) return { ok: false, content: 'Studying a site needs your computer (sandbox), which is not set up. Use fetch_page for its text instead.', summary: 'No computer' };
     const where = await resolveSite(ctx, a.site);
     if ('error' in where) return { ok: false, content: where.error, summary: 'Site not found' };
     const slug = slugOf(where.url);
@@ -371,7 +371,7 @@ export const compareToReferenceTool = defineTool({
   label: () => 'Comparing it with the reference…',
   timeoutMs: 300_000,
   handler: async (a, ctx) => {
-    if (!ctx.services.sandboxes || ctx.services.sandboxes.needs() !== null) return { ok: false, content: 'Comparing needs your computer (sandbox), which is not set up.', summary: 'No computer' };
+    if (!ctx.services.sandboxes || ctx.services.sandboxes.needs(ctx.owner) !== null) return { ok: false, content: 'Comparing needs your computer (sandbox), which is not set up.', summary: 'No computer' };
     if ([a.site, a.path, a.url].filter(Boolean).length !== 1) return { ok: false, content: 'Give exactly one of site, path or url.', summary: 'Bad arguments' };
     const slug = slugOf(a.reference.includes('.') || a.reference.startsWith('http') ? (a.reference.startsWith('http') ? a.reference : `https://${a.reference}`) : a.reference);
     const refDir = `${REF_ROOT}/${slug}`;

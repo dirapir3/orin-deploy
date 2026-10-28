@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS skills (id TEXT PRIMARY KEY, owner TEXT NOT NULL, nam
 CREATE TABLE IF NOT EXISTS summaries (conversation_id TEXT NOT NULL, owner TEXT NOT NULL, upto INTEGER NOT NULL, summary TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (owner, conversation_id));
 CREATE TABLE IF NOT EXISTS connections (owner TEXT NOT NULL, provider TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, expires_at INTEGER NOT NULL, scope TEXT NOT NULL, email TEXT NOT NULL, PRIMARY KEY (owner, provider));
 CREATE TABLE IF NOT EXISTS oauth_states (state TEXT PRIMARY KEY, owner TEXT NOT NULL, provider TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS setup_settings (owner TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (owner, key));
 CREATE TABLE IF NOT EXISTS vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, domain TEXT NOT NULL, username_enc TEXT NOT NULL, password_enc TEXT NOT NULL, notes_enc TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS vault_owner ON vault(owner, name);
 CREATE TABLE IF NOT EXISTS prompts (id TEXT PRIMARY KEY, owner TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, fields TEXT NOT NULL DEFAULT '[]', choices TEXT NOT NULL DEFAULT '[]', task_id TEXT, tool TEXT, status TEXT NOT NULL, decision TEXT, answer TEXT, created_at INTEGER NOT NULL, answered_at INTEGER, expires_at INTEGER NOT NULL);
@@ -720,7 +721,7 @@ export class AgentStore {
   deleteOwner(owner: string): number {
     ensureKnowledgeTables(this.db);
     let total = 0;
-    for (const t of ['memories', 'notes', 'reminders', 'tasks', 'schedules', 'skills', 'summaries', 'connections', 'oauth_states', 'vault', 'prompts', 'inbox', 'usage_daily', 'app_prefs', 'knowledge', 'mcp_servers']) {
+    for (const t of ['memories', 'notes', 'reminders', 'tasks', 'schedules', 'skills', 'summaries', 'connections', 'oauth_states', 'vault', 'prompts', 'inbox', 'usage_daily', 'app_prefs', 'knowledge', 'mcp_servers', 'setup_settings']) {
       total += this.run(`DELETE FROM ${t} WHERE owner = ?`, owner);
     }
     return total;
