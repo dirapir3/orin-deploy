@@ -12,6 +12,7 @@ import { isValidTimezone } from '../agent/cron.js';
 import { chatRuns } from '../agent/chatRuns.js';
 import { buildWorkContext } from '../agent/workContext.js';
 import { offAppsNotice, withoutOffApps } from '../agent/apps.js';
+import { resolveUploadDocuments } from '../agent/uploads.js';
 
 /** A chat reply keeps working on the server when the app goes away, but not forever. */
 const DETACHED_RUN_MS = 50 * 60_000;
@@ -32,6 +33,8 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   const provider = user?.agent ?? deps.providers.agent!;
   const owner = agentOwnerKey(req);
   const account = requesterKey(req);
+  // uploaded files: the model sees the server's own record of each upload (outline, hand-off, how to work on it)
+  resolveUploadDocuments(agent.services, owner, body.messages);
   const timezone = body.timezone && isValidTimezone(body.timezone) ? body.timezone : undefined;
   if (agent.store.usageToday(account, 'chat') >= dailyLimits().chat) throw new AppError('rate_limited', `You've reached today's limit of ${dailyLimits().chat} messages. It resets at midnight UTC.`);
   const incognito = Boolean(body.incognito);

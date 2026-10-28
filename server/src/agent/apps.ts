@@ -16,7 +16,7 @@ export interface BuiltInApp {
 export const BUILT_IN_APPS: BuiltInApp[] = [
   { id: 'search', name: 'Web search', what: 'Searches the web, reads pages and runs deep research', tools: ['web_search', 'fetch_page', 'deep_research'] },
   { id: 'browser', name: 'Browser', what: 'Opens sites, fills forms and signs in with your vault', tools: ['browse', 'browser_*', 'sandbox_browser', 'sandbox_live_view'] },
-  { id: 'computer', name: 'Computer & code', what: 'Runs code, builds apps and edits files on its own computer', tools: ['run_code', 'sandbox_run', 'sandbox_write_file', 'sandbox_read_file', 'sandbox_list_files', 'sandbox_edit_file', 'sandbox_save', 'sandbox_preview', 'sandbox_close', 'sandbox_job', 'write_file', 'read_file', 'list_files', 'delete_file'] },
+  { id: 'computer', name: 'Computer & code', what: 'Runs code, builds apps and edits files on its own computer', tools: ['run_code', 'sandbox_run', 'sandbox_write_file', 'sandbox_read_file', 'sandbox_list_files', 'sandbox_edit_file', 'sandbox_save', 'sandbox_preview', 'sandbox_close', 'sandbox_job', 'upload_to_computer', 'deliver_project', 'write_file', 'read_file', 'list_files', 'delete_file'] },
   { id: 'sites', name: 'Websites & hosting', what: 'Builds, previews and publishes sites and web apps', tools: ['publish_site', 'check_site', 'unpublish_site', 'list_sites', 'open_site', 'preview_site', 'design_kit', 'study_reference', 'compare_to_reference'] },
   { id: 'images', name: 'Images', what: 'Makes pictures', tools: ['generate_image'] },
   { id: 'notes', name: 'Notes', what: 'Writes and keeps notes for you', tools: ['create_note', 'update_note', 'list_notes', 'read_note', 'delete_note'] },

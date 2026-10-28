@@ -63,9 +63,9 @@ export function listFiles(root: string): WsFile[] {
   return out.sort((a, b) => b.modifiedAt - a.modifiedAt);
 }
 
-/** Bytes counted against the 20 MB quota (big downloads/ files have their own limit). */
+/** Bytes counted against the 20 MB quota (big downloads/ files and uploads/ have their own limits). */
 export function usedBytes(root: string): number {
-  return listFiles(root).reduce((n, f) => (f.path.startsWith(`${BIG_DIR}/`) ? n : n + f.size), 0);
+  return listFiles(root).reduce((n, f) => (f.path.startsWith(`${BIG_DIR}/`) || f.path.startsWith('uploads/') ? n : n + f.size), 0);
 }
 
 export function writeWsFile(root: string, rel: string, content: string | Buffer, o: { maxFileBytes?: number } = {}): WsFile {

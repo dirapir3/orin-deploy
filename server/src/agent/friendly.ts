@@ -15,6 +15,10 @@ const CODING = new Set([
   'sandbox_read_file',
   'sandbox_list_files',
   'sandbox_save',
+  'list_uploads',
+  'read_upload',
+  'upload_to_computer',
+  'deliver_project',
   'sandbox_preview',
   'sandbox_close',
   'sandbox_browser',
@@ -103,6 +107,14 @@ export function friendlyLabel(name: string, args: unknown, label: string): strin
       return 'Looking through the files';
     case 'sandbox_save':
       return /\.(apk|aab)$/i.test(str(a.path)) ? 'Getting the app file ready' : 'Saving to your files';
+    case 'list_uploads':
+      return 'Checking your uploads';
+    case 'read_upload':
+      return 'Reading your file';
+    case 'upload_to_computer':
+      return 'Opening your file on the computer';
+    case 'deliver_project':
+      return 'Packing the project for you';
     case 'sandbox_preview':
       return 'Opening a preview';
     case 'sandbox_close':
@@ -133,6 +145,7 @@ export function friendlySummary(name: string, ok: boolean, summary: string): str
   if (ok) {
     if (name === 'sandbox_preview' && /ready/i.test(summary)) return 'Preview ready';
     if (name === 'sandbox_save' && /saved/i.test(summary)) return 'Saved to your files';
+    if (name === 'deliver_project' && /^sent/i.test(summary)) return 'Ready to download';
     return '';
   }
   // Keep the outcome the user would care about, never the raw command or exit code.

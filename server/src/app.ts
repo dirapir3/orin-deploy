@@ -1,5 +1,6 @@
 import { durableHealth } from './durable/state.js';
 import { agentExtraRouter } from './routes/agentExtra.js';
+import { uploadsRouter } from './routes/uploads.js';
 import { webAppRouter } from './webApp.js';
 import { verifyToken } from './agent/vault.js';
 import { mimeFor, readWsFile, workspaceDir } from './agent/workspace.js';
@@ -222,6 +223,7 @@ export function createApp(deps: Deps) {
   app.use(['/v1/agent', '/v1/connectors'], guestOk, createRateLimiter(config, 'agent', 4));
   app.use('/v1', agentRouter(deps));
   app.use('/v1', agentExtraRouter(deps));
+  app.use('/v1', uploadsRouter(deps));
 
   // Android APK download: on hosts without a persistent disk the APK lives elsewhere (e.g. a Hugging Face
   // repo) and APK_URL points at it, so the familiar /download/Orin.apk link keeps working.

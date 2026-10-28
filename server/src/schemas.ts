@@ -27,6 +27,8 @@ const ImageSchema = z.object({
 const DocumentSchema = z.object({
   name: z.string().trim().min(1).max(200),
   text: z.string().max(120_000),
+  /** a file uploaded with POST /v1/agent/uploads: the server rebuilds the text from what it stored */
+  uploadId: z.string().regex(/^up_[a-f0-9]{16}$/).optional(),
 });
 
 export const ChatMessageSchema = z.object({

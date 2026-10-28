@@ -20,6 +20,7 @@ import { createTaskTool, deepResearchTool, taskStatusTool, saveSkillTool, runSki
 import { runCodeTool, browseTool } from './adapters.js';
 import { connectorTools } from '../connectors.js';
 import { sandboxTools } from './sandbox.js';
+import { uploadTools } from './uploads.js';
 import { reviewDesignTool } from './review.js';
 import { learnLessonTool } from './learn.js';
 import { connectToolServerTool, forgetKnowHowTool, recallKnowHowTool, rememberKnowHowTool, studySourceTool, toolServersTool, trialProjectTool, useToolServerTool } from './knowledge.js';
@@ -57,6 +58,7 @@ export const ALL_TOOLS: ToolDef[] = [
   ...extraTools,
   ...connectorTools,
   ...sandboxTools,
+  ...uploadTools,
   reviewDesignTool,
   learnLessonTool,
   rememberKnowHowTool,
