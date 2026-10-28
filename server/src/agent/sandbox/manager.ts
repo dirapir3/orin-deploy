@@ -21,14 +21,41 @@ export interface SandboxManagerOptions {
   onStart?: (owner: string, s: SandboxSession, log: (kind: SandboxEventKind, text: string, ok?: boolean) => void) => Promise<void>;
   /** before close, e.g. save changed files; skipped when the session was used from an incognito chat */
   onBeforeClose?: (owner: string, s: SandboxSession, log: (kind: SandboxEventKind, text: string, ok?: boolean) => void) => Promise<void>;
+  /**
+   * The owner's sandbox connections to try, best first (AI setup > Sandboxes). When it returns any,
+   * they are used instead of provider(); when one cannot start a computer the next is tried.
+   */
+  candidates?: (owner: string) => SandboxCandidate[];
+  /** told when a connection started a computer (ok) or failed to start / died (not ok) */
+  onHealth?: (owner: string, connectionId: string, ok: boolean, error?: string) => void;
   now?: () => number;
   /** sweep timer period; 0 = no timer (tests call sweep()) */
   sweepMs?: number;
 }
 
+export interface SandboxCandidate {
+  connectionId: string;
+  label: string;
+  provider: SandboxProvider;
+}
+
+/** What was lost when a computer stopped by itself (shown to Orin and in the status). */
+export interface SandboxInterruption {
+  at: number;
+  label: string;
+  reason: string;
+  /** a background job (sandbox_job) was probably still running */
+  jobInterrupted: boolean;
+}
+
 interface Entry {
   owner: string;
   session: SandboxSession;
+  /** the connection it runs on (null = the plain provider(), no connections set up) */
+  connectionId: string | null;
+  label: string;
+  /** close as soon as the current command finishes (its connection was removed or switched off) */
+  retire?: string;
   startedAt: number;
   lastUsedAt: number;
   /** when the provider-side kill timer was last moved */
@@ -48,6 +75,8 @@ export interface SandboxStatus {
   /** when it will close if nothing else happens */
   closesAt: number;
   busy: boolean;
+  connectionId: string | null;
+  label: string;
 }
 
 export class SandboxBusyError extends Error {
@@ -59,6 +88,10 @@ export class SandboxBusyError extends Error {
 
 const MAX_EVENTS = 60;
 
+/** Errors that mean the computer itself is gone (not a command that failed). Confirmed by a probe. */
+const GONE = /sandbox (?:was )?not found|sandbox .*(?:not running|terminated|killed|stopped|expired)|not found.*sandbox|\b(?:404|502|503)\b|ECONNRESET|ECONNREFUSED|socket hang up|fetch failed|other side closed|terminated|connection (?:was )?(?:closed|reset)/i;
+const msgOf = (e: unknown) => String((e as Error)?.message ?? e);
+
 export class SandboxManager {
   readonly idleMs: number;
   readonly maxLifeMs: number;
@@ -66,6 +99,7 @@ export class SandboxManager {
   private readonly sessions = new Map<string, Entry>();
   private readonly starting = new Map<string, Promise<Entry>>();
   private readonly events = new Map<string, SandboxEvent[]>();
+  private readonly interruptions = new Map<string, SandboxInterruption>();
   private readonly now: () => number;
   private timer?: NodeJS.Timeout;
 
@@ -82,10 +116,20 @@ export class SandboxManager {
     }
   }
 
-  /** null when sandboxes can be used, otherwise what is missing */
-  needs(): string | null {
+  /** null when sandboxes can be used (for this owner, when given), otherwise what is missing */
+  needs(owner?: string): string | null {
+    if (owner && this.o.candidates) {
+      // the owner's connections are the whole list (the server key is in it as "Built-in")
+      return this.list(owner).some((c) => !c.provider.needs()) ? null : 'a working sandbox connection (AI setup > Sandboxes)';
+    }
     const p = this.o.provider();
-    return p ? p.needs() : 'a sandbox provider (E2B_API_KEY)';
+    return p ? p.needs() : 'a sandbox connection (AI setup > Sandboxes) or E2B_API_KEY';
+  }
+
+  /** The last time the owner's computer stopped by itself, if it was recent. */
+  lastInterruption(owner: string): SandboxInterruption | null {
+    const i = this.interruptions.get(owner);
+    return i && this.now() - i.at < 60 * 60_000 ? i : null;
   }
 
   providerId(): string | null {
@@ -106,7 +150,7 @@ export class SandboxManager {
   status(owner: string): SandboxStatus | null {
     const e = this.sessions.get(owner);
     if (!e || e.closing) return null;
-    return { provider: e.session.provider, id: e.session.id, startedAt: e.startedAt, lastUsedAt: e.lastUsedAt, closesAt: Math.min(e.lastUsedAt + this.idleMs, e.startedAt + this.maxLifeMs), busy: e.busy > 0 };
+    return { provider: e.session.provider, id: e.session.id, startedAt: e.startedAt, lastUsedAt: e.lastUsedAt, closesAt: Math.min(e.lastUsedAt + this.idleMs, e.startedAt + this.maxLifeMs), busy: e.busy > 0, connectionId: e.connectionId, label: e.label };
   }
 
   activeCount(): number {
@@ -125,10 +169,64 @@ export class SandboxManager {
     try {
       await this.keepAlive(e);
       return await fn(e.session);
+    } catch (err) {
+      if (!opts.signal?.aborted && !e.closing && GONE.test(msgOf(err)) && !(await this.alive(e))) {
+        throw new Error(this.markDead(e, msgOf(err)));
+      }
+      throw err;
     } finally {
       e.busy--;
       e.lastUsedAt = this.now();
+      if (e.retire && e.busy === 0 && !e.closing) void this.close(owner, e.retire);
     }
+  }
+
+  /** A tiny command, to tell a failed command from a computer that is gone. */
+  private async alive(e: Entry): Promise<boolean> {
+    try {
+      const r = await e.session.exec('true', { cwd: '/', timeoutMs: 15_000 });
+      return r.exitCode === 0 || r.exitCode === null;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The computer stopped by itself (provider ended it, out of credit, network gone): forget it,
+   * mark the connection as failing so the next start goes to another one, and say what was lost.
+   */
+  private markDead(e: Entry, reason: string): string {
+    this.sessions.delete(e.owner);
+    e.closing = Promise.resolve();
+    const jobInterrupted = Boolean(e.jobUntil && this.now() < e.jobUntil);
+    this.interruptions.set(e.owner, { at: this.now(), label: e.label, reason: reason.slice(0, 200), jobInterrupted });
+    this.log(e.owner, 'error', `The computer on ${e.label} stopped by itself (${reason.slice(0, 120)})`, false, { sandboxId: e.session.id });
+    logger.warn('sandbox died', { id: e.session.id, connection: e.connectionId, reason: reason.slice(0, 200) });
+    if (e.connectionId) this.o.onHealth?.(e.owner, e.connectionId, false, `The computer stopped by itself: ${reason.slice(0, 160)}`);
+    void e.session.close().catch(() => undefined);
+    return (
+      `The computer on ${e.label} stopped by itself (${reason.slice(0, 120)}). ` +
+      'Files saved before that are kept; changes since the last save' +
+      (jobInterrupted ? ' and the background job that was running' : '') +
+      ' were lost. The next step starts a new computer' +
+      (this.o.candidates ? ' on the next working sandbox connection' : '') +
+      ' with the saved files; nothing was re-run automatically.'
+    );
+  }
+
+  /**
+   * A connection was removed or switched off: computers on it close (saving first) now if idle,
+   * or right after the command that is running. Returns how many were affected.
+   */
+  retireConnection(connectionId: string, reason: string, owners?: (owner: string) => boolean): number {
+    let n = 0;
+    for (const e of this.sessions.values()) {
+      if (e.closing || e.connectionId !== connectionId || (owners && !owners(e.owner))) continue;
+      n++;
+      if (e.busy > 0) e.retire = reason;
+      else void this.close(e.owner, reason);
+    }
+    return n;
   }
 
   private async keepAlive(e: Entry) {
@@ -145,8 +243,10 @@ export class SandboxManager {
   private async acquire(owner: string, signal?: AbortSignal): Promise<Entry> {
     const cur = this.sessions.get(owner);
     if (cur && !cur.closing) {
-      if (this.now() - cur.startedAt < this.maxLifeMs || cur.busy > 0) return cur;
-      await this.close(owner, 'it reached its time limit');
+      // a computer stays on the connection it started on (jobs and files are there) until it closes
+      if (cur.retire && cur.busy === 0) await this.close(owner, cur.retire);
+      else if (this.now() - cur.startedAt < this.maxLifeMs || cur.busy > 0) return cur;
+      else await this.close(owner, 'it reached its time limit');
     } else if (cur?.closing) {
       await cur.closing;
     }
@@ -157,10 +257,28 @@ export class SandboxManager {
     return p;
   }
 
+  private list(owner: string): SandboxCandidate[] {
+    let list: SandboxCandidate[] = [];
+    if (this.o.candidates) {
+      try {
+        list = this.o.candidates(owner);
+      } catch (err) {
+        logger.warn('sandbox connections lookup failed', { err: String(err) });
+      }
+    }
+    if (!list.length && !this.o.candidates) {
+      const p = this.o.provider();
+      if (p) list = [{ connectionId: '', label: p.id.toUpperCase(), provider: p }];
+    }
+    return list;
+  }
+
   private async start(owner: string, signal?: AbortSignal): Promise<Entry> {
-    const provider = this.o.provider();
-    const missing = provider ? provider.needs() : 'a sandbox provider';
-    if (!provider || missing) throw new Error(`The sandbox is not set up on this server (needs ${missing}).`);
+    const list = this.list(owner).filter((c) => !c.provider.needs());
+    if (!list.length) {
+      const p = this.o.candidates ? null : this.o.provider();
+      throw new Error(`No sandbox is set up (needs ${p?.needs() ?? 'a working sandbox connection: add or switch one on in AI setup > Sandboxes'}).`);
+    }
     if (this.activeCount() + this.starting.size >= this.maxSessions) {
       // free the quietest idle sandbox of someone else before giving up
       const idle = [...this.sessions.values()].filter((x) => !x.closing && x.busy === 0).sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
@@ -168,17 +286,38 @@ export class SandboxManager {
       else throw new SandboxBusyError('All sandboxes on this server are busy right now. Try again in a minute.');
     }
     const t0 = this.now();
-    let session: SandboxSession;
-    try {
-      session = await provider.create({ timeoutMs: this.idleMs + 2 * 60_000, metadata: { app: 'orin', owner: owner.slice(0, 64) }, signal });
-    } catch (err) {
-      this.log(owner, 'error', `Could not start the sandbox: ${String((err as Error)?.message ?? err)}`, false);
-      throw err;
+    let session: SandboxSession | null = null;
+    let used: SandboxCandidate = list[0]!;
+    const failed: string[] = [];
+    let lastErr: unknown;
+    for (const c of list) {
+      try {
+        session = await c.provider.create({ timeoutMs: this.idleMs + 2 * 60_000, metadata: { app: 'orin', owner: owner.slice(0, 64) }, signal });
+        used = c;
+        break;
+      } catch (err) {
+        lastErr = err;
+        const m = msgOf(err).slice(0, 200);
+        failed.push(`${c.label}: ${m}`);
+        if (c.connectionId) this.o.onHealth?.(owner, c.connectionId, false, `Could not start a computer: ${m}`);
+        if (signal?.aborted) break;
+        const next = list[list.indexOf(c) + 1];
+        if (list.length > 1) this.log(owner, 'error', `Could not start a computer on ${c.label}: ${m}${next ? ` Trying ${next.label}.` : ''}`, false);
+      }
     }
-    const e: Entry = { owner, session, startedAt: this.now(), lastUsedAt: this.now(), extendedAt: this.now(), busy: 0, noSave: false };
+    if (!session) {
+      if (list.length === 1) {
+        this.log(owner, 'error', `Could not start the sandbox: ${msgOf(lastErr)}`, false);
+        throw lastErr;
+      }
+      throw new Error(`No sandbox connection could start a computer. ${failed.join(' | ')}`);
+    }
+    const e: Entry = { owner, session, connectionId: used.connectionId || null, label: used.label, startedAt: this.now(), lastUsedAt: this.now(), extendedAt: this.now(), busy: 0, noSave: false };
     this.sessions.set(owner, e);
-    this.log(owner, 'start', `Started a ${provider.id.toUpperCase()} sandbox`, true, { ms: this.now() - t0, sandboxId: session.id });
-    logger.info('sandbox started', { provider: provider.id, id: session.id, ms: this.now() - t0 });
+    if (used.connectionId) this.o.onHealth?.(owner, used.connectionId, true);
+    const via = failed.length ? ` after ${failed.length} connection${failed.length > 1 ? 's' : ''} failed` : '';
+    this.log(owner, 'start', this.o.candidates && used.connectionId ? `Started a computer on ${used.label}${via}` : `Started a ${used.provider.id.toUpperCase()} sandbox${via}`, true, { ms: this.now() - t0, sandboxId: session.id });
+    logger.info('sandbox started', { provider: used.provider.id, connection: used.connectionId || undefined, failedOver: failed.length || undefined, id: session.id, ms: this.now() - t0 });
     if (this.o.onStart) {
       try {
         await this.o.onStart(owner, session, (k, t, ok = true) => this.log(owner, k, t, ok, { sandboxId: session.id }));

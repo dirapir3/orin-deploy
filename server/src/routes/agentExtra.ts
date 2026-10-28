@@ -353,8 +353,8 @@ export function agentExtraRouter(deps: Deps): Router {
   r.get('/agent/sandbox', (req, res) => {
     const m = agent.services.sandboxes;
     const o = owner(req);
-    const needs = m ? m.needs() : 'a sandbox provider (E2B_API_KEY)';
-    res.json({ enabled: needs === null, needs, provider: m?.providerId() ?? null, session: m?.status(o) ?? null, events: m?.activity(o) ?? [] });
+    const needs = m ? m.needs(o) : 'a sandbox provider (E2B_API_KEY)';
+    res.json({ enabled: needs === null, needs, provider: m?.providerId() ?? null, session: m?.status(o) ?? null, events: m?.activity(o) ?? [], interrupted: m?.lastInterruption(o) ?? null });
   });
   r.post('/agent/sandbox/stop', async (req, res) => {
     const m = agent.services.sandboxes;

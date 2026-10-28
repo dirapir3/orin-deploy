@@ -21,6 +21,7 @@ import { chatRouter } from './routes/chat.js';
 import { filesRouter } from './routes/files.js';
 import { realtimeRouter } from './routes/realtime.js';
 import { voiceRouter } from './routes/voice.js';
+import { setupRouter } from './routes/setup.js';
 import { ttsStreams } from './ai/ttsStream.js';
 import { agentRouter } from './routes/agent.js';
 import { requestBaseUrl } from './routes/agentChat.js';
@@ -172,6 +173,7 @@ export function createApp(deps: Deps) {
   // streaming voice clips: the random id is the permission (players cannot send auth headers)
   app.get('/v1/voice/speech/stream/:id', createRateLimiter(config, 'voice-stream', 3), (req, res) => ttsStreams.serve(req, res));
   app.use('/v1/voice', guestOk, createRateLimiter(config, 'voice', 3), voiceRouter(deps));
+  app.use('/v1/setup', guestOk, createRateLimiter(config, 'setup', 1), setupRouter(deps));
   app.use('/v1/files', guestOk, createRateLimiter(config, 'files', 0.5), filesRouter(deps));
   app.use('/v1/realtime', userOnly, createRateLimiter(config, 'realtime', 0.25), realtimeRouter(deps));
   app.use('/v1/account', userOnly, createRateLimiter(config, 'account', 0.5), accountRouter(deps));

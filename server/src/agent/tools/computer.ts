@@ -28,7 +28,7 @@ export const sandboxEditFileTool = defineTool({
     edits: z.array(z.object({ old: z.string().min(1).max(200_000), new: z.string().max(200_000), replace_all: z.boolean().optional() })).min(1).max(50),
   }),
   label: (a) => `Editing ${short(a.path, 40)}…`,
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   handler: async (a, ctx) => {
     const p = sandboxPath(a.path);
     return withSandbox(ctx, async (s) => {
@@ -66,7 +66,7 @@ export const sandboxJobTool = defineTool({
     secrets: secretsSchema,
   }),
   label: (a) => (a.action === 'start' ? `Starting ${short(a.command ?? '', 40)}…` : a.action === 'status' ? 'Checking the job…' : a.action === 'stop' ? 'Stopping the job…' : 'Listing jobs…'),
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   timeoutMs: 180_000,
   approval: (a) => {
     if (a.action !== 'start' || !a.command) return null;
@@ -215,7 +215,7 @@ export const sandboxBrowserTool = defineTool({
     confirm: z.boolean().optional().describe('true to press a send/submit/buy/delete-type control after it was refused; the user approves it first'),
   }),
   label: (a) => (a.action === 'open' ? `Opening ${short(a.url ?? '', 40)}…` : a.action === 'type' && a.login ? 'Signing in…' : `Browser: ${a.action}…`),
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   timeoutMs: 170_000,
   approval: (a, ctx) => {
     if (!a.confirm || !['click', 'press', 'type'].includes(a.action)) return null;
@@ -280,7 +280,7 @@ export const sandboxLiveViewTool = defineTool({
     "Get a link where the user watches your computer's screen live and can use it (tap, type, scroll): your browser runs there. Give it when they want to see what you're doing, or when a step needs them (a code, a captcha, a payment card); the link works while your computer is on.",
   schema: z.object({}),
   label: () => 'Opening the live view…',
-  needs: ({ services }) => sandboxNeeds(services),
+  needs: ({ services, owner }) => sandboxNeeds(services, owner),
   timeoutMs: 120_000,
   handler: async (_a, ctx) => {
     const r = await runBrowser(ctx, { action: 'live' });
