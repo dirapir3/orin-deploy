@@ -16,7 +16,7 @@ import {
 } from './personal.js';
 import { calculatorTool, dateTimeTool } from './utility.js';
 import { generateImageTool } from './image.js';
-import { createTaskTool, deepResearchTool, taskStatusTool, saveSkillTool, runSkillTool, listSkillsTool, createScheduleTool, deleteScheduleTool } from './tasks.js';
+import { createTaskTool, deepResearchTool, taskStatusTool, addToTaskTool, saveSkillTool, runSkillTool, listSkillsTool, createScheduleTool, deleteScheduleTool } from './tasks.js';
 import { runCodeTool, browseTool } from './adapters.js';
 import { connectorTools } from '../connectors.js';
 import { sandboxTools } from './sandbox.js';
@@ -47,6 +47,7 @@ export const ALL_TOOLS: ToolDef[] = [
   createTaskTool,
   deepResearchTool,
   taskStatusTool,
+  addToTaskTool,
   saveSkillTool,
   runSkillTool,
   listSkillsTool,

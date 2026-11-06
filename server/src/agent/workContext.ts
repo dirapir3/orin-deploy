@@ -87,6 +87,6 @@ export function buildWorkContext(
     ...head,
     'Work in progress and recent results (same list in chat and on calls):',
     ...lines,
-    'When the user asks how something is going or what came of it, answer from this list (use task_status with the id for more detail). Do not start a second copy of work that is already running; continue or report on it instead. A result already given in another chat can be summarised here.',
+    'When the user asks how something is going or what came of it, answer from this list (use task_status with the id for more detail). Do not start a second copy of work that is already running; continue or report on it instead. When the user changes or adds to a RUNNING background task, pass it on with add_to_task (if you have it) and say it will be included. A result already given in another chat can be summarised here.',
   ].join('\n');
 }

@@ -214,6 +214,13 @@ export class ChatRunRegistry {
     return out;
   }
 
+  /** Runs of this owner in one chat (a ghost chat has no id: pass the run ids the app sent), newest first. */
+  inConversation(owner: string, conversationId: string): ChatRun[] {
+    const out: ChatRun[] = [];
+    for (const r of this.runs.values()) if (r.owner === owner && r.conversationId === conversationId) out.push(r);
+    return out.sort((a, b) => b.createdAt - a.createdAt);
+  }
+
   anyActive(): boolean {
     for (const r of this.runs.values()) if (!r.done) return true;
     return false;

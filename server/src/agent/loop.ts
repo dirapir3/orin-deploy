@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ChatProvider, ProviderMessage, ToolCall } from '../ai/types.js';
 import { AppError } from '../errors.js';
 import { WorkTracker } from './craft.js';
+import { amendmentNote, type Amendment } from './amendments.js';
 import { friendlyLabel, friendlySummary } from './friendly.js';
 import { toToolSpec, type ToolContext, type ToolDef, type ToolDisplay } from './tools/types.js';
 
@@ -37,6 +38,11 @@ export interface RunAgentOptions {
   handoff?: (messages: ProviderMessage[]) => Promise<string | null>;
   /** Called after every round of tool results with the transcript so far (background tasks save it, so a restart resumes from here). */
   onCheckpoint?: (messages: ProviderMessage[], steps: number) => void;
+  /**
+   * Messages the user sent in the chat while this work runs (agent/amendments.ts). Taken before
+   * every step, and once more before the final answer, so a change they ask for lands in this work.
+   */
+  takeNotes?: () => Amendment[];
 }
 
 const OUTPUT_LIMIT_NOTE =
@@ -176,8 +182,22 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
   let emptyNudges = 0;
   let handedOff = false;
   let maxSteps = o.maxSteps;
+  let amendRounds = 0;
+  /** what the user said mid-work goes in as their own words (a user-side turn: Gemini drops mid-chat system messages) */
+  const takeNotes = (): boolean => {
+    let notes: Amendment[] = [];
+    try {
+      notes = o.takeNotes?.() ?? [];
+    } catch {
+      notes = [];
+    }
+    if (!notes.length) return false;
+    messages.push({ role: 'user', content: amendmentNote(notes) });
+    return true;
+  };
   while (steps < maxSteps) {
     if (o.signal.aborted) throw new AppError('cancelled', 'Cancelled.');
+    takeNotes();
     steps++;
     o.onEvent({ type: 'step', step: steps });
     // with a handoff the last step still gets tools; if it uses them, the work moves to the background
@@ -233,6 +253,23 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
         messages.push({ role: 'user', content: `[Note from the Orin system, not from the user] ${gate}` });
         maxSteps++;
         continue;
+      }
+      // The user wrote while this answer was being written: it becomes progress narration and the
+      // work takes their message into account first (a few rounds at most, outside the step budget).
+      if (!last && !o.signal.aborted && amendRounds < 3 && o.takeNotes) {
+        const before = messages.length;
+        messages.push({ role: 'assistant', content: stepText || '(still working)' });
+        if (takeNotes()) {
+          amendRounds++;
+          if (stepText.trim()) {
+            lastInterim = stepText;
+            o.onEvent({ type: 'interim', text: /\s$/.test(stepText) ? stepText : `${stepText}\n\n` });
+            if (!/\s$/.test(stepText)) text += '\n\n';
+          }
+          maxSteps++;
+          continue;
+        }
+        messages.length = before;
       }
       finalText = stepText;
       break;

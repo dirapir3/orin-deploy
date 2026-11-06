@@ -13,6 +13,8 @@ import { chatRuns } from '../agent/chatRuns.js';
 import { buildWorkContext } from '../agent/workContext.js';
 import { offAppsNotice, withoutOffApps } from '../agent/apps.js';
 import { resolveUploadDocuments } from '../agent/uploads.js';
+import { amendments, runKey } from '../agent/amendments.js';
+import { alongsideContext, passAlong, saidText } from '../agent/alongside.js';
 
 /** A chat reply keeps working on the server when the app goes away, but not forever. */
 const DETACHED_RUN_MS = 50 * 60_000;
@@ -50,6 +52,13 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   limit.unref?.();
   const character = agentIdOf(req);
   run.topic = [...body.messages].reverse().find((m) => m.role === 'user')?.content.slice(0, 160) ?? '';
+  // The chat never locks: a message sent while earlier work in this chat still runs also goes to that work.
+  let along: string | undefined;
+  try {
+    along = alongsideContext(passAlong({ runs: chatRuns, store: agent.store, owner, account, run, conversationId, incognito, alongside: body.alongside, said: saidText(body.messages) }));
+  } catch (err) {
+    logger.warn('could not pass a message to running work', { err: String(err) });
+  }
   // One work picture for text and voice: running/recent tasks, other replies still working, cards waiting.
   let work: string | undefined;
   if (!incognito) {
@@ -59,6 +68,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       work = undefined;
     }
   }
+  if (along) work = work ? `${work}\n\n${along}` : along;
   // apps the user turned off for this character on the Apps page are not offered (chat and calls)
   const appsOff = agent.store.appsOff(owner);
   const tools = withoutOffApps(agent.tools.available(owner, agent.services, { incognito }), appsOff);
@@ -114,6 +124,8 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       maxOutputTokens: config.agent.maxOutputTokens,
       toolTimeoutMs: config.agent.toolTimeoutMs,
       signal: controller.signal,
+      // what the user writes in this chat while this reply works (agent/amendments.ts)
+      takeNotes: () => amendments.take(runKey(run.id)),
       // out of steps with work still going: carry on as a background task instead of stopping
       handoff: incognito
         ? undefined
@@ -121,7 +133,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
             const lastUser = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
             const title = lastUser.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Carrying on';
             run.handedOff = true; // Activity lists the background task from here on, not this reply
-            return agent.continueInBackground(owner, { title, prompt: lastUser, messages: msgs, conversationId, timezone });
+            return agent.continueInBackground(owner, { title, prompt: lastUser, messages: msgs, conversationId, timezone, from: runKey(run.id) });
           },
       onEvent: (ev) => {
         if (controller.signal.aborted) return;
@@ -174,6 +186,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     }
   } finally {
     clearTimeout(limit);
+    if (!run.handedOff) amendments.close(runKey(run.id));
     run.end(); // ends every attached stream
     if (!res.writableEnded) res.end();
   }

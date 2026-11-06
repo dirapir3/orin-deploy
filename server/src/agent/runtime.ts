@@ -14,6 +14,7 @@ import { webSearch, fetchReadable, type SearchResult } from './tools/web.js';
 import { computeNextRun } from './tools/tasks.js';
 import type { LookupFn } from './net.js';
 import { createSandboxManager } from './sandbox/index.js';
+import { amendments, taskKey } from './amendments.js';
 import { chatRuns } from './chatRuns.js';
 
 export interface AgentRuntimeOptions {
@@ -298,6 +299,7 @@ export class AgentRuntime {
     } finally {
       clearTimeout(timeout);
       this.running.delete(task.id);
+      amendments.close(taskKey(task.id));
     }
   }
 
@@ -327,7 +329,7 @@ export class AgentRuntime {
    * user is never asked to say "continue". Returns the line to tell the user, or null when the
    * chain of continuations is used up.
    */
-  continueInBackground(owner: string, o: { title: string; prompt: string; messages: ProviderMessage[]; conversationId?: string | null; timezone?: string; part?: number }): string | null {
+  continueInBackground(owner: string, o: { title: string; prompt: string; messages: ProviderMessage[]; conversationId?: string | null; timezone?: string; part?: number; from?: string }): string | null {
     const part = (o.part ?? 0) + 1;
     if (part > this.config.agent.maxContinuations) return null;
     const resume = compactTranscript(o.messages.filter((m, i) => !(i === 0 && m.role === 'system')));
@@ -339,6 +341,8 @@ export class AgentRuntime {
       ...(o.timezone ? { timezone: o.timezone } : {}),
     });
     this.store.addTaskEvent(t.id, 'queued', part === 1 ? 'Carrying on in the background' : `Carrying on (part ${part + 1})`);
+    // what the user writes in the chat from now on reaches the background task (agent/amendments.ts)
+    if (o.from) amendments.redirect(o.from, taskKey(t.id));
     this.kick();
     return part === 1
       ? "This is taking a while, so I'm carrying on in the background. I'll post the result here as soon as it's done, you don't need to ask again."
@@ -393,6 +397,12 @@ export class AgentRuntime {
       signal,
       onEvent,
       onCheckpoint: checkpoint,
+      // what the user says in the chat while this runs (add_to_task, or a reply that moved here)
+      takeNotes: () => {
+        const notes = amendments.take(taskKey(task.id));
+        if (notes.length) this.store.addTaskEvent(task.id, 'note', notes.length === 1 ? 'Got your extra message' : `Got ${notes.length} extra messages`);
+        return notes;
+      },
       handoff: async (msgs) =>
         this.continueInBackground(task.owner, {
           title: task.title,
@@ -401,6 +411,7 @@ export class AgentRuntime {
           conversationId: typeof task.input.conversationId === 'string' ? task.input.conversationId : null,
           timezone: tz,
           part: typeof task.input.part === 'number' ? task.input.part : 0,
+          from: taskKey(task.id),
         }),
     });
     if (lastSave) {

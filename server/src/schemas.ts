@@ -54,6 +54,11 @@ export const ChatRequestSchema = z
     character: z.string().trim().max(30).optional(),
     /** set false to get a plain reply without tools */
     agent: z.boolean().optional(),
+    /**
+     * replies still working in this chat on the sending device (their run ids): the new message is
+     * also passed to them (agent/amendments.ts), and this reply answers alongside them
+     */
+    alongside: z.array(z.string().uuid()).max(8).optional(),
   })
   .superRefine((val, ctx) => {
     const last = val.messages[val.messages.length - 1];

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { defineTool, type AgentServices } from './types.js';
 import { isValidTimezone, nextCronRun } from '../cron.js';
 import type { Schedule } from '../store.js';
+import { amendments, taskKey } from '../amendments.js';
 
 export function computeNextRun(s: Pick<Schedule, 'cron' | 'intervalSec' | 'timezone'> & { runAt?: number | null }, from: number): number {
   if (s.runAt && !s.cron && !s.intervalSec) {
@@ -69,6 +70,27 @@ export const taskStatusTool = defineTool({
     const list = st.listTasks(ctx.owner, { limit: 10 });
     if (!list.length) return { content: 'No background tasks yet.', summary: 'No tasks' };
     return { content: list.map((t) => `- ${t.title} (id ${t.id}): ${t.status}`).join('\n'), summary: `${list.length} tasks` };
+  },
+});
+
+export const addToTaskTool = defineTool({
+  name: 'add_to_task',
+  description:
+    'Pass something the user just said to a background task that is still RUNNING (or waiting to start), so that task takes it into account at its next step: a change, an addition, a correction or a detail for that work. Use it instead of starting the same work again. The task posts its own result; tell the user in a few words that it will be included.',
+  schema: z.object({
+    id: z.string().min(4).max(80).describe('The running task id (from the work list or task_status)'),
+    message: z.string().min(1).max(4000).describe("What to pass on, in the user's own words where you can"),
+  }),
+  label: () => 'Passing that on…',
+  interactiveOnly: true,
+  handler: async (a, ctx) => {
+    const t = ctx.services.store.getTask(ctx.owner, a.id);
+    if (!t) return { ok: false, content: 'No task with that id.', summary: 'Task not found' };
+    if (t.status !== 'running' && t.status !== 'queued') return { ok: false, content: `That task is already ${t.status}, so it cannot take more input. Start new work for this instead, or tell the user.`, summary: `Task ${t.status}` };
+    const key = amendments.add(taskKey(t.id), a.message);
+    // the task may already have carried on as a next part: say where it went
+    const to = key.startsWith('task:') ? key.slice(5) : t.id;
+    return { content: `Passed to the task "${t.title}" (id ${to}). It takes it in at its next step and posts the result itself.`, summary: 'Passed on to the task', display: { kind: 'task', id: to, title: t.title, status: t.status } };
   },
 });
 
