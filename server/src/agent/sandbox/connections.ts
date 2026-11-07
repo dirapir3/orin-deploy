@@ -75,6 +75,9 @@ export const SANDBOX_PROVIDERS: SandboxProviderDef[] = [
 export const SANDBOX_NEEDS_ADAPTER = ['Modal', 'CodeSandbox', 'Vercel Sandbox', 'Runloop', 'Fly Machines'];
 
 export const SERVER_CONNECTION_ID = 'server';
+/** the server's own phone sandbox from LOCAL_SANDBOX_* env (survives restarts, default ahead of everything) */
+export const SERVER_LOCAL_ID = 'server-local';
+export type ServerLocal = { url: string; token: string; discovery?: string };
 const MARK = 'orin-sandbox';
 /** a connection that failed is tried last for this long */
 export const FAIL_COOLDOWN_MS = 5 * 60_000;
@@ -274,6 +277,8 @@ export class SandboxConnections {
     private readonly o: {
       /** the server's own E2B key (Built-in connection), '' when none */
       serverKey: () => string;
+      /** the server's own local (phone) sandbox, null when not set */
+      serverLocal?: () => ServerLocal | null;
       fetchImpl?: FetchLike;
       lookup?: Parameters<typeof assertPublicUrl>[1];
       now?: () => number;
@@ -310,10 +315,20 @@ export class SandboxConnections {
   private hasServer() {
     return Boolean(this.o.serverKey());
   }
+  private serverLocal(): ServerLocal | null {
+    const l = this.o.serverLocal?.() ?? null;
+    return l && l.token && (l.url || l.discovery) ? l : null;
+  }
+  private builtInIds(): string[] {
+    return [...(this.serverLocal() ? [SERVER_LOCAL_ID] : []), ...(this.hasServer() ? [SERVER_CONNECTION_ID] : [])];
+  }
+  private isBuiltIn(id: string) {
+    return this.builtInIds().includes(id);
+  }
 
   /** The effective default: the chosen one if it is still there and on, else the first one that is on. */
   private defaultId(account: string, s = this.settings(account)): string | null {
-    const ids = [...this.rows(account).map((x) => x.n.id), ...(this.hasServer() ? [SERVER_CONNECTION_ID] : [])].filter((id) => !s.disabled.includes(id));
+    const ids = [...(this.serverLocal() ? [SERVER_LOCAL_ID] : []), ...this.rows(account).map((x) => x.n.id), ...(this.hasServer() ? [SERVER_CONNECTION_ID] : [])].filter((id) => !s.disabled.includes(id));
     if (s.defaultId && ids.includes(s.defaultId)) return s.defaultId;
     return ids[0] ?? null;
   }
@@ -337,6 +352,24 @@ export class SandboxConnections {
       createdAt: n.createdAt,
       updatedAt: row.updatedAt,
     }));
+    const loc = this.serverLocal();
+    if (loc) {
+      out.unshift({
+        id: SERVER_LOCAL_ID,
+        provider: 'local',
+        providerLabel: providerDef('local').label,
+        label: 'Phone sandbox (built-in)',
+        ...(loc.url ? { apiUrl: loc.url } : {}),
+        ...(loc.discovery ? { discovery: discoverySummary(loc.discovery) } : {}),
+        last4: last4(loc.token),
+        enabled: !s.disabled.includes(SERVER_LOCAL_ID),
+        isDefault: def === SERVER_LOCAL_ID,
+        builtIn: true,
+        health: h(SERVER_LOCAL_ID),
+        createdAt: 0,
+        updatedAt: 0,
+      });
+    }
     if (this.hasServer()) {
       out.push({
         id: SERVER_CONNECTION_ID,
@@ -376,6 +409,10 @@ export class SandboxConnections {
       s.disabled = s.disabled.filter((x) => x !== id);
       if (!input.enabled) s.disabled.push(id);
     }
+    if (id === SERVER_LOCAL_ID && this.serverLocal()) {
+      this.save(account, s);
+      return this.list(account).find((c) => c.id === id)!;
+    }
     if (id === SERVER_CONNECTION_ID) {
       if (!this.hasServer()) throw new AppError('not_found', 'This server has no built-in sandbox key.');
       if (input.key || input.label || input.apiUrl || input.discovery) throw new AppError('validation_error', "The built-in connection uses the server's own key; change it in Render's settings (E2B_API_KEY).");
@@ -406,7 +443,7 @@ export class SandboxConnections {
   }
 
   setDefault(account: string, id: string): SandboxConnectionPublic[] {
-    if (id !== SERVER_CONNECTION_ID || !this.hasServer()) this.find(account, id);
+    if (!this.isBuiltIn(id)) this.find(account, id);
     const s = this.settings(account);
     s.defaultId = id;
     s.disabled = s.disabled.filter((x) => x !== id);
@@ -415,7 +452,7 @@ export class SandboxConnections {
   }
 
   remove(account: string, id: string): boolean {
-    if (id === SERVER_CONNECTION_ID) throw new AppError('validation_error', "The built-in connection can't be deleted here; switch it off instead.");
+    if (id === SERVER_CONNECTION_ID || id === SERVER_LOCAL_ID) throw new AppError('validation_error', "The built-in connection can't be deleted here; switch it off instead.");
     const { row } = this.find(account, id);
     const ok = this.st.deleteVault(account, row.id);
     const s = this.settings(account);
@@ -428,6 +465,10 @@ export class SandboxConnections {
   }
 
   private keyOf(account: string, id: string): { provider: SandboxProviderId; key: string; apiUrl?: string; discovery?: string; label: string; stamp: number } | null {
+    if (id === SERVER_LOCAL_ID) {
+      const l = this.serverLocal();
+      return l ? { provider: 'local', key: l.token, apiUrl: l.url, discovery: l.discovery, label: 'Phone sandbox (built-in)', stamp: 0 } : null;
+    }
     if (id === SERVER_CONNECTION_ID) {
       const key = this.o.serverKey();
       return key ? { provider: 'e2b', key, label: 'Built-in (server key)', stamp: 0 } : null;
@@ -516,7 +557,7 @@ export class SandboxConnections {
   candidates(account: string): SandboxCandidate[] {
     const s = this.settings(account);
     const def = this.defaultId(account, s);
-    const ids = [...this.rows(account).map((x) => x.n.id), ...(this.hasServer() ? [SERVER_CONNECTION_ID] : [])].filter((id) => !s.disabled.includes(id));
+    const ids = [...(this.serverLocal() ? [SERVER_LOCAL_ID] : []), ...this.rows(account).map((x) => x.n.id), ...(this.hasServer() ? [SERVER_CONNECTION_ID] : [])].filter((id) => !s.disabled.includes(id));
     const now = this.now();
     const cooling = (id: string) => Boolean(s.health[id]?.state === 'failed' && (s.health[id]?.failedUntil ?? 0) > now);
     const ordered = [...ids].sort((a, b) => Number(cooling(a)) - Number(cooling(b)) || Number(b === def) - Number(a === def));

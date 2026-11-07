@@ -2,6 +2,7 @@ import type { AgentServices } from '../tools/types.js';
 import { E2BProvider } from './e2b.js';
 import { SandboxManager, type SandboxManagerOptions } from './manager.js';
 import { restoreToSandbox, saveBeforeClose } from './persist.js';
+import { exportSignins } from '../browserState.js';
 import type { SandboxProvider } from './types.js';
 import { baseOwner } from '../../middleware/auth.js';
 import { sandboxConnections } from './connections.js';
@@ -21,7 +22,15 @@ export function pickProvider(svc: Pick<AgentServices, 'config'>): SandboxProvide
 
 /** The account's sandbox connections (AI setup > Sandboxes); the server key is the Built-in one. */
 export function connectionsFor(svc: Pick<AgentServices, 'config' | 'store'>) {
-  return sandboxConnections(svc.store, { serverKey: () => (svc.config.integrations.codeSandbox === 'e2b' ? svc.config.integrations.e2bKey : '') });
+  return sandboxConnections(svc.store, {
+    serverKey: () => (svc.config.integrations.codeSandbox === 'e2b' ? svc.config.integrations.e2bKey : ''),
+    serverLocal: () => {
+      const token = (process.env.LOCAL_SANDBOX_TOKEN ?? '').trim();
+      const url = (process.env.LOCAL_SANDBOX_URL ?? '').trim();
+      const discovery = (process.env.LOCAL_SANDBOX_DISCOVERY ?? '').trim();
+      return token && (url || discovery) ? { token, url, ...(discovery ? { discovery } : {}) } : null;
+    },
+  });
 }
 
 export function createSandboxManager(svc: AgentServices, opts: Partial<SandboxManagerOptions> = {}): SandboxManager {
@@ -41,7 +50,14 @@ export function createSandboxManager(svc: AgentServices, opts: Partial<SandboxMa
     maxLifeMs: Number(process.env.SANDBOX_MAX_MIN) * 60_000 || undefined,
     maxSessions: Number(process.env.SANDBOX_MAX_SESSIONS) || undefined,
     onStart: async (owner, s, log) => void (await restoreToSandbox(svc, owner, s, log)),
-    onBeforeClose: async (owner, s, log) => void (await saveBeforeClose(svc, owner, s, log)),
+    onBeforeClose: async (owner, s, log) => {
+      // browser sign-ins first (quick), then changed files; the manager skips this for incognito sessions
+      try {
+        const n = await exportSignins(svc.store, owner, s);
+        if (n > 0) log('save', 'Kept the browser sign-ins for the next computer');
+      } catch {}
+      await saveBeforeClose(svc, owner, s, log);
+    },
     ...opts,
   });
 }
