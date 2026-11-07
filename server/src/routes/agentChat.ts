@@ -108,7 +108,10 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     run.end();
     throw err;
   }
-  const model = ctx.hasImages ? config.chat.visionModel : config.chat.model;
+  const fullModel = ctx.hasImages ? config.chat.visionModel : config.chat.model;
+  // quick lane: the fast model answers plain conversation (on the free Gemini tier the main model is often over
+  // quota, and walking the fallback chain to reach flash-lite cost 4-10 s a turn); work switches back to fullModel
+  const model = lite && !ctx.hasImages && config.chat.fastModel && config.agent.quickLaneFastModel ? config.chat.fastModel : fullModel;
   // written down from here on, so a server restart can put it back and carry it on (runJournal.ts)
   if (!incognito) {
     chatRuns.journal?.track(run, { mode: body.mode, character, timezone });
@@ -139,7 +142,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       model,
       messages: ctx.messages,
       tools: runTools,
-      escalate: lite && ctx.fullSystem ? { tools, system: () => ctx.fullSystem!(tools.map((t: { name: string }) => t.name)) } : undefined,
+      escalate: lite && ctx.fullSystem ? { tools, model: fullModel, system: () => ctx.fullSystem!(tools.map((t: { name: string }) => t.name)) } : undefined,
       firstByteMs: lite ? 10_000 : undefined,
       ctx: toolCtx,
       maxSteps: body.mode === 'voice' ? Math.min(config.agent.maxSteps, 12) : config.agent.maxSteps,

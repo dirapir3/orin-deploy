@@ -48,7 +48,7 @@ export interface RunAgentOptions {
    * Quick lane (agent/quickLane.ts): the run starts with a short prompt and a few tools. When the model
    * calls more_tools, the full prompt and these tools are swapped in for the rest of the reply.
    */
-  escalate?: { tools: ToolDef[]; system: () => string };
+  escalate?: { tools: ToolDef[]; system: () => string; model?: string };
   /** quick lane only: move on to the next model when one sends nothing for this long */
   firstByteMs?: number;
 }
@@ -160,6 +160,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
   let specs = o.tools.map(toToolSpec);
   let byName = new Map(o.tools.map((t) => [t.name, t]));
   let escalate = o.escalate;
+  let model = o.model;
   const messages = [...o.messages];
   let text = '';
   let steps = 0;
@@ -215,7 +216,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
     const calls: ToolCall[] = [];
     finishReason = 'stop';
     for await (const chunk of o.provider.streamChat({
-      model: o.model,
+      model,
       messages: last ? [...messages, { role: 'system', content: BUDGET_NOTE }] : messages,
       maxOutputTokens: o.maxOutputTokens,
       temperature: o.temperature,
@@ -301,6 +302,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       if (more) byName.set(MORE_TOOLS, more);
       const sysAt = messages.findIndex((m) => m.role === 'system');
       if (sysAt >= 0) messages[sysAt] = { role: 'system', content: escalate.system() };
+      if (escalate.model) model = escalate.model;
       escalate = undefined;
       maxSteps++;
     }
@@ -371,7 +373,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       // could not hand it on: one last step without tools, saying honestly where things stand
       let stepText = '';
       for await (const chunk of o.provider.streamChat({
-        model: o.model,
+        model,
         messages: [...messages, { role: 'system', content: BUDGET_NOTE }],
         maxOutputTokens: o.maxOutputTokens,
         temperature: o.temperature,
