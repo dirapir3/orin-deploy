@@ -96,6 +96,9 @@ function parseArgs(raw: string): unknown {
   }
 }
 
+/** Tools that change or read a shared computer/project state, so a batch of them must keep its order. */
+export const STATEFUL_TOOL = /^(sandbox_|computer_|upload_to_computer|deliver_project|publish_site|preview_site|unpublish_site|build_|deploy|git_|apk_|write_file|delete_file)/;
+
 export async function executeTool(tool: ToolDef | undefined, call: ToolCall, ctx: ToolContext, timeoutMs: number) {
   if (!tool) return { ok: false, content: `Error: unknown tool "${call.name}". Use only the tools provided.`, summary: 'Unknown tool' };
   let args: unknown;
@@ -323,8 +326,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       } else kept += /\s$/.test(stepText) ? stepText : `${stepText}\n\n`;
     }
     toolCalls += calls.length;
-    const results = await Promise.all(
-      calls.map(async (call) => {
+    const runCall = async (call: ToolCall) => {
         const tool = byName.get(call.name);
         let label = `Using ${call.name}…`;
         let args: unknown = {};
@@ -343,8 +345,13 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
         if (!r.ok) failedTools.push(call.name);
         o.onEvent({ type: 'tool_end', id: call.id, name: call.name, ok: r.ok, summary: friendlySummary(call.name, r.ok, r.summary), display: r.display, durationMs: Date.now() - started });
         return { call, r, args };
-      }),
-    );
+    };
+    // Steps on one computer usually depend on each other (write a file, then run it): run those one
+    // after another in the order the model gave them. Independent calls (searches, reads) stay parallel.
+    const serial = calls.filter((c) => STATEFUL_TOOL.test(c.name)).length > 1;
+    const results: Awaited<ReturnType<typeof runCall>>[] = [];
+    if (serial) for (const call of calls) results.push(await runCall(call));
+    else results.push(...(await Promise.all(calls.map(runCall))));
     const recovery: string[] = [];
     for (const { call, r, args } of results) {
       messages.push({ role: 'tool', toolCallId: call.id, name: call.name, content: r.content.slice(0, 24_000) });

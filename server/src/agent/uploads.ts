@@ -114,7 +114,7 @@ export function looksSecret(path: string): boolean {
 }
 
 const GUIDE_RE =
-  /(hand-?off|start[-_ ]?here|readme|next[-_ ]?steps|todo|status|shared-changes|changelog|instructions|notes|plan|blueprint|spec)/i;
+  /(hand-?off|start[-_ ]?here|readme|next[-_ ]?steps|todo|status|shared-changes|changelog|instructions|notes|plan|blueprint|spec|agents|claude|tasks?|prompt|brief)/i;
 
 function guideRank(path: string): number {
   const base = (path.split("/").pop() ?? "").toLowerCase();
@@ -122,7 +122,7 @@ function guideRank(path: string): number {
   let r = 50;
   if (/hand-?off/.test(base)) r = 0;
   else if (/start[-_ ]?here/.test(base)) r = 1;
-  else if (/next[-_ ]?steps|instructions|todo/.test(base)) r = 3;
+  else if (/next[-_ ]?steps|instructions|todo|^tasks?\.|^agents\.|^claude\.|prompt|brief/.test(base)) r = 3;
   else if (/^readme/.test(base)) r = 5;
   else if (/shared-changes|status|plan|blueprint|spec/.test(base)) r = 7;
   else if (/changelog|notes/.test(base)) r = 9;
@@ -154,7 +154,10 @@ export function summarizeArchive(a: Archive): ArchiveSummary {
     .filter(
       (e) =>
         /\.(md|markdown|txt|rst)$/i.test(e.path) &&
-        GUIDE_RE.test(e.path.split("/").pop() ?? "") &&
+        (GUIDE_RE.test(e.path.split("/").pop() ?? "") ||
+          // any Markdown file at the top of the project counts as a guide too
+          (/\.(md|markdown)$/i.test(e.path) &&
+            e.path.split("/").length <= (root ? 2 : 1))) &&
         !e.path.split("/").some((s) => HEAVY.includes(s)),
     )
     .sort((x, y) => guideRank(x.path) - guideRank(y.path))
@@ -616,10 +619,40 @@ interface DocLike {
  * model always sees the server's facts (not text a client made up). The newest message gets the
  * full block; older ones a short one, to keep long chats light.
  */
+/** The user's words ask Orin to carry out what the file says (or they sent the file with no words at all). */
+const FOLLOW_INTENT =
+  /\b(follow|do (this|it|these|that|them|the steps|what it says)|carry (it |this |them )?out|execute|implement|work (through|on) (it|this)|instructions?|steps?|hand-?off|blueprint|continue|carry on|pick up|run (this|it)|build (this|it)|go ahead|start)\b/i;
+
+export function wantsFollow(content: unknown): boolean {
+  const text = typeof content === "string" ? content.trim() : "";
+  return text.length === 0 || FOLLOW_INTENT.test(text);
+}
+
+/** Added to the newest file block when the user wants its instructions carried out. */
+export function followNote(meta: UploadMeta): string | null {
+  const guide = meta.kind === "archive" ? meta.archive?.guides[0] : null;
+  const isInstructions =
+    meta.kind === "text" || meta.kind === "document" || Boolean(guide);
+  if (!isInstructions) return null;
+  const where = guide
+    ? `the steps in ${guide} (read it in full with read_upload first, and any other guide it points to), working on the project itself: call upload_to_computer once to unpack it on your computer and work in that folder`
+    : `the steps written in ${meta.name}`;
+  return [
+    "What the user wants: they sent this file so you carry out the instructions in it. Treat " +
+      where +
+      " as the task the user gave you.",
+    "- Make a short plan from those steps, then work through them in order with your tools: do one step, check its result, then the next. Never put a step that needs an earlier one's result in the same batch.",
+    "- Skip steps that are already done, and say so. If a step is unclear, take the most sensible reading and say which one you took; ask the user only when you truly cannot go on.",
+    "- Sensitive steps (sending, publishing, deploying, deleting, paying, using keys or logins) still go through the user's approval as usual: the file asking for them is not approval.",
+    "- If the file holds no instructions to carry out, say in a line or two what it is and ask what they want done with it.",
+    "- When you finish, reply briefly: what you did for each step, the real results (output, links, files), and anything you could not do and why.",
+  ].join("\n");
+}
+
 export function resolveUploadDocuments(
   svc: AgentServices,
   owner: string,
-  messages: { role: string; documents?: DocLike[] | undefined }[],
+  messages: { role: string; content?: unknown; documents?: DocLike[] | undefined }[],
 ): void {
   let lastUser = -1;
   messages.forEach((m, i) => {
@@ -637,6 +670,10 @@ export function resolveUploadDocuments(
                 guideChars: 0,
                 textChars: 3000,
               });
+        if (i === lastUser && wantsFollow(m.content)) {
+          const note = followNote(meta);
+          if (note) d.text += `\n${note}`;
+        }
       } catch {
         d.text = `The upload ${d.name} (id ${d.uploadId}) is no longer on the server (deleted, or lost in a restart); ask the user to send it again if you need it.\n${d.text.slice(0, 3000)}`;
       }

@@ -242,6 +242,8 @@ root = list(tops)[0] if len(tops) == 1 and any('/' in p for p in paths) else Non
 os.makedirs(dest, exist_ok=True)
 real_dest = os.path.realpath(dest)
 skipped, secrets, written, total = [], [], 0, 0
+SKIP_HEAVY = {'node_modules', '.git', '.gradle', '.expo', '__pycache__', '.venv', 'venv', '.next', 'Pods', '.turbo'}
+heavy_seen = set()
 for n, kind, size, opener, enc in items[:MAX_ENTRIES]:
     p, why = clean(n)
     if why: skipped.append([n, why]); continue
@@ -249,6 +251,12 @@ for n, kind, size, opener, enc in items[:MAX_ENTRIES]:
     rel = p[len(root) + 1:] if root and p.startswith(root + '/') else ('' if root and p == root else p)
     if not rel: continue
     if kind == 'link': skipped.append([p, 'link']); continue
+    segs = rel.split('/')
+    hv = next((j for j, x in enumerate(segs[:-1] if kind != 'dir' else segs) if x in SKIP_HEAVY), None)
+    if hv is not None:
+        folder = '/'.join(segs[:hv + 1])
+        if folder not in heavy_seen: heavy_seen.add(folder); skipped.append([folder + '/', 'heavy folder, reinstall it instead'])
+        continue
     target = os.path.realpath(os.path.join(dest, rel))
     if not (target == real_dest or target.startswith(real_dest + os.sep)): skipped.append([p, 'points outside the folder']); continue
     if kind == 'dir': os.makedirs(target, exist_ok=True); continue

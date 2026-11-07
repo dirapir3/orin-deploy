@@ -18,6 +18,8 @@ import { logger } from './logger.js';
 import { authenticate, type TokenVerifier } from './middleware/auth.js';
 import { createRateLimiter } from './middleware/rateLimit.js';
 import { accountRouter } from './routes/account.js';
+import { orinAccountsRouter } from './routes/orinAccounts.js';
+import { OrinAccounts } from './services/orinAccounts.js';
 import { AvatarStore, avatarFileHandler, profileRouter } from './routes/profile.js';
 import { chatRouter } from './routes/chat.js';
 import { filesRouter } from './routes/files.js';
@@ -41,6 +43,8 @@ export interface Deps {
   verifier: TokenVerifier | null;
   usage: UsageSink;
   accounts: AccountService | null;
+  /** Email sign-in through Firebase (undefined = read from env). */
+  orinAccounts?: OrinAccounts | null;
   fetchImpl?: FetchLike;
   /** Agent runtime (tools, store, worker, scheduler). Created on demand when not supplied. */
   agent?: AgentRuntime;
@@ -63,6 +67,7 @@ export const API_VERSION = '1.0.0';
 
 export function createApp(deps: Deps) {
   const { config, providers, verifier } = deps;
+  const orinAccounts = deps.orinAccounts !== undefined ? deps.orinAccounts : OrinAccounts.fromEnv();
   const app = express();
   app.disable('x-powered-by');
   if (config.trustProxy) app.set('trust proxy', 1);
@@ -143,7 +148,7 @@ export function createApp(deps: Deps) {
         tools: agent.enabled ? agent.tools.available('', agent.services).map((t: { name: string }) => t.name) : [],
       },
       capabilities: capabilityReport(config, providers, agent),
-      auth: { accounts: Boolean(verifier), guests: config.access.allowGuests, accountDeletion: Boolean(deps.accounts) },
+      auth: { accounts: Boolean(verifier), guests: config.access.allowGuests, accountDeletion: Boolean(deps.accounts), orinAccounts: Boolean(orinAccounts) },
       limits: {
         maxImageMb: Math.round(config.access.maxImageBytes / 1024 / 1024),
         maxUploadMb: Math.round(config.access.maxUploadBytes / 1024 / 1024),
@@ -185,6 +190,7 @@ export function createApp(deps: Deps) {
   app.use('/v1/files', guestOk, createRateLimiter(config, 'files', 0.5), filesRouter(deps));
   app.use('/v1/realtime', userOnly, createRateLimiter(config, 'realtime', 0.25), realtimeRouter(deps));
   app.use('/v1/account', userOnly, createRateLimiter(config, 'account', 0.5), accountRouter(deps));
+  app.use('/v1/accounts', guestOk, createRateLimiter(config, 'accounts', 0.5), orinAccountsRouter(orinAccounts));
   // Profile pictures: upload/replace/remove are owner-only; the stored files have random names.
   const avatars = AvatarStore.forConfig(config);
   app.use('/v1/profile', guestOk, createRateLimiter(config, 'profile'), profileRouter(avatars));
