@@ -14,8 +14,9 @@ import { webSearch, fetchReadable, type SearchResult } from './tools/web.js';
 import { computeNextRun } from './tools/tasks.js';
 import type { LookupFn } from './net.js';
 import { createSandboxManager } from './sandbox/index.js';
+import { chatRuns, type ChatRun } from './chatRuns.js';
+import { RunJournal, carryOn, type RecoveryHost } from './runJournal.js';
 import { amendments, taskKey } from './amendments.js';
-import { chatRuns } from './chatRuns.js';
 
 export interface AgentRuntimeOptions {
   config: AppConfig;
@@ -88,7 +89,60 @@ export class AgentRuntime {
       enqueue: () => this.kick(),
     };
     this.services.sandboxes = createSandboxManager(this.services);
+    // chat replies are written down as they go, so a restart does not lose them (runJournal.ts)
+    chatRuns.journal = new RunJournal(this.store.db);
     if (o.startBackground) this.start();
+  }
+
+  /** What carrying a chat run on needs from the runtime (runJournal.ts). */
+  recoveryHost(): RecoveryHost {
+    return {
+      continueInBackground: (owner, o) => this.continueInBackground(owner, o),
+      closePromptsFor: (linkId) => {
+        const now = Date.now();
+        return Number(this.store.db.prepare("UPDATE prompts SET status = 'expired', answered_at = ? WHERE task_id = ? AND status = 'pending'").run(now, linkId).changes);
+      },
+      deliverReply: (owner, conversationId, replyId, text) => {
+        this.store.addInbox(owner, 'reply', 'Reply', text, conversationId, replyId ?? undefined);
+      },
+    };
+  }
+
+  /**
+   * Chat replies that were working when the server stopped: put back at once (same id and events,
+   * so the app reconnects to them), then carried on from their last checkpoint after `delayMs`,
+   * which gives the old server instance of a redeploy time to stop first.
+   */
+  recoverChatRuns(delayMs: number): ChatRun[] {
+    const journal = chatRuns.journal;
+    if (!journal) return [];
+    const runs = journal.interrupted();
+    for (const run of runs) {
+      chatRuns.adopt(run);
+      // Stop while it waits: it simply ends, nothing is carried on
+      run.controller.signal.addEventListener('abort', () => {
+        if (run.done) return;
+        run.outcome = { status: 'cancelled' };
+        run.end();
+        journal.close(run, 'cancelled');
+      });
+    }
+    if (runs.length) {
+      logger.info('chat replies interrupted by a restart', { count: runs.length });
+      const go = () => {
+        for (const run of runs) {
+          if (run.done) continue;
+          try {
+            carryOn(journal, this.recoveryHost(), run, 'restart');
+          } catch (err) {
+            logger.warn('could not carry on a chat reply', { err: String(err) });
+          }
+        }
+      };
+      if (delayMs <= 0) go();
+      else setTimeout(go, delayMs).unref?.();
+    }
+    return runs;
   }
 
   get enabled(): boolean {
@@ -111,6 +165,11 @@ export class AgentRuntime {
     this.started = true;
     const requeued = this.store.requeueStale();
     if (requeued) logger.info('requeued tasks interrupted by a restart', { requeued });
+    try {
+      this.recoverChatRuns(Number(process.env.ORIN_RUN_RECOVERY_DELAY_MS ?? 60_000));
+    } catch (err) {
+      logger.warn('could not put back interrupted chat replies', { err: String(err) });
+    }
     if (this.config.agent.worker) {
       this.timers.push(setInterval(() => this.kick(), this.config.agent.workerPollMs));
       this.timers.push(setInterval(() => this.tickScheduler(), this.config.agent.schedulerTickMs));

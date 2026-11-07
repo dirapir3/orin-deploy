@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { AgentRuntime } from './agent/runtime.js';
+import { chatRuns } from './agent/chatRuns.js';
 import { buildProviders } from './ai/registry.js';
 import { createApp } from './app.js';
 import { dirname, resolve } from 'node:path';
@@ -107,6 +108,12 @@ server.headersTimeout = 65_000;
 
 const shutdown = (signal: string) => {
   logger.info('shutting down', { signal });
+  // chat replies still working are written down as they are now: the next server carries them on
+  try {
+    chatRuns.journal?.flushAll();
+  } catch {
+    // the journal saves as it goes anyway
+  }
   void agent.stop().finally(async () => {
     agent.store.close();
     // Save the last changes before the host wipes the disk.

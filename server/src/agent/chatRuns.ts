@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Response } from 'express';
+import type { RunJournal } from './runJournal.js';
 
 /**
  * Chat replies that outlive the connection, like Sesame: the agent keeps working on the server when
@@ -49,8 +50,6 @@ export function replyTitle(topic: string): string {
 }
 
 export class ChatRun {
-  readonly id = randomUUID();
-  readonly createdAt = Date.now();
   readonly controller = new AbortController();
   readonly events: RunEvent[] = [];
   done = false;
@@ -68,6 +67,10 @@ export class ChatRun {
   handedOff = false;
   /** ghost chats leave nothing behind, Activity included */
   incognito = false;
+  /** put back from the journal after a server restart (runJournal.ts) */
+  restored = false;
+  /** journal hooks: every event and the end are written down (runJournal.ts) */
+  journal: { emit: (e: RunEvent) => void; end: () => void } | null = null;
   private subs = new Set<(e: RunEvent | null) => void>();
 
   constructor(
@@ -75,6 +78,9 @@ export class ChatRun {
     readonly account: string,
     readonly replyId: string | null,
     readonly conversationId: string | null,
+    /** a run put back after a restart keeps its id, so the app can find it again */
+    readonly id: string = randomUUID(),
+    readonly createdAt: number = Date.now(),
   ) {}
 
   get attached(): boolean {
@@ -113,6 +119,11 @@ export class ChatRun {
     const e = { event, data };
     this.events.push(e);
     for (const s of this.subs) s(e);
+    try {
+      this.journal?.emit(e);
+    } catch {
+      // writing it down must never break a reply
+    }
   }
 
   /** registry hook: runs once when the run ends */
@@ -127,6 +138,11 @@ export class ChatRun {
     } catch {
       // Activity bookkeeping must never break a reply
     }
+    try {
+      this.journal?.end();
+    } catch {
+      // same
+    }
     for (const s of this.subs) s(null);
     this.subs.clear();
   }
@@ -134,6 +150,12 @@ export class ChatRun {
   /** Streams events after `after` to res, then live ones, until the run ends or res closes. */
   attach(res: Response, after = 0) {
     const write = (e: RunEvent) => res.write(`event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`);
+    // the app saw more events than this run has (a run put back after a restart can be missing the
+    // last few): it starts the reply over from the first event instead of skipping ahead
+    if (after > this.events.length) {
+      res.write('event: reset\ndata: {}\n\n');
+      after = 0;
+    }
     for (let i = Math.max(0, after); i < this.events.length; i++) write(this.events[i]!);
     if (this.done) {
       res.end();
@@ -159,6 +181,8 @@ export class ChatRunRegistry {
   private runs = new Map<string, ChatRun>();
   /** per owner: the last few finished replies that did work (newest first) */
   private recent = new Map<string, ReplyActivity[]>();
+  /** writes runs down so they survive a server restart (set by the agent runtime) */
+  journal: RunJournal | null = null;
 
   create(owner: string, account: string, replyId: string | null, conversationId: string | null): ChatRun {
     this.sweep();
@@ -197,7 +221,36 @@ export class ChatRunRegistry {
 
   get(id: string, account: string): ChatRun | null {
     const r = this.runs.get(id);
-    return r && r.account === account ? r : null;
+    if (r) return r.account === account ? r : null;
+    // finished before a restart: replay it from the journal
+    const saved = this.journal?.loadDone(id, account) ?? null;
+    if (saved) this.runs.set(saved.id, saved);
+    return saved;
+  }
+
+  /** A run put back after a restart (runJournal.ts). */
+  adopt(run: ChatRun) {
+    this.runs.set(run.id, run);
+  }
+
+  /**
+   * The run to join when the same reply is sent again (the connection dropped before the app heard
+   * back): one still working, or one that finished well (replayed, not run twice). A reply that
+   * failed or was stopped is not joined: sending it again is a real retry.
+   */
+  sameReply(replyId: string, account: string): ChatRun | null {
+    const live = this.byReply(replyId, account);
+    if (live) return !live.done || live.handedOff || (live.outcome?.status ?? (live.controller.signal.aborted ? 'cancelled' : 'done')) === 'done' ? live : null;
+    const saved = this.journal?.byReply(replyId, account);
+    if (saved && ['done', 'handed_off', 'resumed'].includes(saved.status)) return this.get(saved.id, account);
+    return null;
+  }
+
+  /** The newest run for this reply id in memory (the app lost the run id). */
+  byReply(replyId: string, account: string): ChatRun | null {
+    let best: ChatRun | null = null;
+    for (const r of this.runs.values()) if (r.replyId === replyId && r.account === account && (!best || r.createdAt > best.createdAt)) best = r;
+    return best;
   }
 
   /** Runs still working for this agent owner (counted as "running" so the phone keeps checking). */

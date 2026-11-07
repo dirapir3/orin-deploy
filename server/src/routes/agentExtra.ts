@@ -8,6 +8,7 @@ import type { Deps } from '../app.js';
 import { AppError } from '../errors.js';
 import { agentOwnerKey, agentOwners, requesterKey } from '../middleware/auth.js';
 import { chatRuns } from '../agent/chatRuns.js';
+import { carryOn } from '../agent/runJournal.js';
 import { parseBody } from './util.js';
 import { CHARACTERS } from '../agent/persona.js';
 import { saveLogin, toPublic, updateLogin, signToken } from '../agent/vault.js';
@@ -221,6 +222,49 @@ export function agentExtraRouter(deps: Deps): Router {
 
   // all four agents in one poll (items and prompts carry their agent id)
   // ---- chat replies that keep working while the app is away (see agent/chatRuns.ts)
+  // The run behind a reply, found by the reply id the app sent (it lost the run id: the connection
+  // dropped before the first event, or the app was closed or reloaded). Also after a restart.
+  r.get('/agent/runs/by-reply/:replyId', (req, res) => {
+    const acc = account(req);
+    const replyId = String(req.params.replyId);
+    const saved = chatRuns.journal?.byReply(replyId, acc) ?? null;
+    const live = chatRuns.byReply(replyId, acc);
+    if (live) {
+      const status = live.done ? (live.handedOff ? 'handed_off' : (live.outcome?.status ?? (live.controller.signal.aborted ? 'cancelled' : 'done'))) : 'running';
+      res.json({ id: live.id, status, done: live.done, resumable: Boolean(saved && saved.id === live.id && saved.resumable), events: live.events.length });
+      return;
+    }
+    if (!saved) throw new AppError('not_found', 'That reply is no longer available.');
+    res.json(saved);
+  });
+  // Try again on a reply that failed after doing real work: carry it on from its last finished step
+  // as a background task instead of starting over. {ok:false} when there is nothing to carry on
+  // (the app then asks again from the start).
+  r.post('/agent/runs/:id/resume', (req, res) => {
+    const journal = chatRuns.journal;
+    const run = chatRuns.get(String(req.params.id), account(req));
+    if (!run) throw new AppError('not_found', 'That reply is no longer available.');
+    if (!run.done) {
+      res.json({ ok: true, running: true });
+      return;
+    }
+    const data = journal?.resumeData(run.id);
+    if (data?.status === 'resumed') {
+      res.json({ ok: true, line: "I already picked this back up and I'm finishing it in the background. The result will be posted here." });
+      return;
+    }
+    if (!journal || !data || data.status !== 'failed' || !data.steps) {
+      res.json({ ok: false, reason: 'nothing_to_resume' });
+      return;
+    }
+    const line = carryOn(journal, agent.recoveryHost(), run, 'error');
+    if (!line) {
+      res.json({ ok: false, reason: 'nothing_to_resume' });
+      return;
+    }
+    run.handedOff = true; // Activity lists the background task from here on
+    res.json({ ok: true, line });
+  });
   // Pick a reply up again: every event after the first `after` ones, then live ones until it ends.
   r.get('/agent/runs/:id/events', (req, res) => {
     const run = chatRuns.get(String(req.params.id), account(req));

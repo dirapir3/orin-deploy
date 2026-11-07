@@ -19,6 +19,15 @@ import { alongsideContext, passAlong, saidText } from '../agent/alongside.js';
 /** A chat reply keeps working on the server when the app goes away, but not forever. */
 const DETACHED_RUN_MS = 50 * 60_000;
 
+function openStream(res: Response) {
+  res.status(200);
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+}
+
 export function requestBaseUrl(req: Request): string {
   return `${req.protocol}://${req.get('host') ?? 'localhost'}`;
 }
@@ -41,6 +50,14 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   if (agent.store.usageToday(account, 'chat') >= dailyLimits().chat) throw new AppError('rate_limited', `You've reached today's limit of ${dailyLimits().chat} messages. It resets at midnight UTC.`);
   const incognito = Boolean(body.incognito);
   const conversationId = body.conversationId && !incognito ? body.conversationId : null;
+  // The same reply sent again (the connection dropped before the app heard back): join the run
+  // already working on it (or replay the one that finished) instead of doing the job a second time.
+  const same = body.replyId && !incognito ? chatRuns.sameReply(body.replyId, account) : null;
+  if (same) {
+    openStream(res);
+    same.attach(res, 0);
+    return;
+  }
   // The run belongs to the server, not to this connection: closing the app or losing the network
   // does not stop it (the app can pick it up again, see chatRuns.ts). Stop goes through
   // POST /v1/agent/runs/:id/cancel.
@@ -88,13 +105,13 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     throw err;
   }
   const model = ctx.hasImages ? config.chat.visionModel : config.chat.model;
+  // written down from here on, so a server restart can put it back and carry it on (runJournal.ts)
+  if (!incognito) {
+    chatRuns.journal?.track(run, { mode: body.mode, character, timezone });
+    chatRuns.journal?.checkpoint(run, ctx.messages, 0);
+  }
 
-  res.status(200);
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
+  openStream(res);
   run.attach(res, 0);
   const started = Date.now();
   let chars = 0;
@@ -110,7 +127,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       signal: controller.signal,
       timeoutMs: 10 * 60_000,
       linkId: `reply:${run.id}`,
-      onCreated: (p) => sse(res, 'prompt', { id: p.id, kind: p.kind, title: p.title, body: p.body, headline: p.headline, content: p.content, url: p.url, secret: p.secret, fields: p.fields, choices: p.choices, tool: p.tool, expiresAt: p.expiresAt }),
+      onCreated: (p) => sse(res, 'prompt', { id: p.id, kind: p.kind, title: p.title, body: p.body, headline: p.headline, content: p.content, url: p.url, secret: p.secret, fields: p.fields, choices: p.choices, tool: p.tool, expiresAt: p.expiresAt, status: p.status, decision: p.decision, answer: p.answer }),
     });
   try {
     const result = await runAgent({
@@ -124,6 +141,8 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       maxOutputTokens: config.agent.maxOutputTokens,
       toolTimeoutMs: config.agent.toolTimeoutMs,
       signal: controller.signal,
+      // after every tool step: the point a restart or Try again carries the work on from
+      onCheckpoint: incognito ? undefined : (msgs, steps) => chatRuns.journal?.checkpoint(run, msgs, steps),
       // what the user writes in this chat while this reply works (agent/amendments.ts)
       takeNotes: () => amendments.take(runKey(run.id)),
       // out of steps with work still going: carry on as a background task instead of stopping
