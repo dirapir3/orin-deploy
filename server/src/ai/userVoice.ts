@@ -8,6 +8,7 @@ import { logger } from '../logger.js';
 import { GeminiVoiceProvider } from './providers/geminiVoice.js';
 import { OpenAICompatibleVoiceProvider } from './providers/openaiCompatible.js';
 import { DeepgramVoiceProvider, ElevenLabsVoiceProvider } from './providers/voiceExtra.js';
+import { HEYGEN_DEFAULT_VOICE, HEYGEN_MODELS, HeyGenVoiceProvider } from './providers/heygenVoice.js';
 import type { SpeechRequest, TranscribeRequest, VoiceInfo, VoiceProvider } from './types.js';
 import type { SpeechStream } from './providers/geminiVoice.js';
 
@@ -32,7 +33,7 @@ import { aiVault } from './userKeys.js';
  * call keeps going) and the failure is recorded, so Settings shows it instead of hiding it.
  */
 
-export type VoiceServiceId = 'openai' | 'groq' | 'gemini' | 'elevenlabs' | 'deepgram' | 'custom';
+export type VoiceServiceId = 'openai' | 'groq' | 'gemini' | 'elevenlabs' | 'deepgram' | 'heygen' | 'custom';
 
 export interface VoiceServiceDef {
   id: VoiceServiceId;
@@ -52,6 +53,8 @@ export interface VoiceServiceDef {
   /** speech starts playing before the whole reply is generated (lowest delay) */
   streaming: boolean;
   keyUrl?: string;
+  /** plain names for the speaking models, shown as choices instead of a text field */
+  ttsModelLabels?: Record<string, string>;
   hint: string;
 }
 
@@ -65,6 +68,7 @@ export const VOICE_SERVICES: VoiceServiceDef[] = [
   { id: 'groq', label: 'Groq', stt: true, tts: false, aiKeyProviders: ['groq'], needsBaseUrl: false, baseUrl: 'https://api.groq.com/openai/v1', sttModels: ['whisper-large-v3-turbo', 'whisper-large-v3'], ttsModels: [], voices: [], voicesFromAccount: false, streaming: false, keyUrl: 'https://console.groq.com/keys', hint: 'Very fast listening (Whisper). Pick another service to speak.' },
   { id: 'elevenlabs', label: 'ElevenLabs', stt: true, tts: true, aiKeyProviders: [], needsBaseUrl: false, baseUrl: 'https://api.elevenlabs.io', sttModels: ['scribe_v2', 'scribe_v1'], ttsModels: ['eleven_flash_v2_5', 'eleven_turbo_v2_5', 'eleven_multilingual_v2'], voices: [], voicesFromAccount: true, streaming: false, keyUrl: 'https://elevenlabs.io/app/settings/api-keys', hint: 'Natural voices, including your own cloned ones. Tap Load voices after saving.' },
   { id: 'deepgram', label: 'Deepgram', stt: true, tts: true, aiKeyProviders: [], needsBaseUrl: false, baseUrl: 'https://api.deepgram.com', sttModels: ['nova-3', 'nova-2'], ttsModels: [], voices: DEEPGRAM_VOICES, voicesFromAccount: false, streaming: false, keyUrl: 'https://console.deepgram.com', hint: 'Fast listening and Aura voices.' },
+  { id: 'heygen', label: 'HeyGen', stt: false, tts: true, aiKeyProviders: [], needsBaseUrl: false, baseUrl: 'https://api.heygen.com', sttModels: [], ttsModels: HEYGEN_MODELS, voices: [{ id: HEYGEN_DEFAULT_VOICE, name: 'Nadine' }], voicesFromAccount: true, streaming: true, keyUrl: 'https://platform.heygen.com/api-keys', ttsModelLabels: { 'heygen-voice-1-turbo-free': 'Turbo Free', 'heygen-voice-1-turbo': 'Turbo (paid)', 'heygen-voice-1': 'Voice 1 (paid, best)' }, hint: 'HeyGen Voice speaks only. Turbo Free is free until November 30, 2026, with public voices and your instant clones. Listening stays with the default voice.' },
   { id: 'custom', label: 'Custom (OpenAI audio API)', stt: true, tts: true, aiKeyProviders: ['custom', 'omniroute', 'openai', 'groq', 'together', 'openrouter'], needsBaseUrl: true, baseUrl: '', sttModels: [], ttsModels: [], voices: [], voicesFromAccount: false, streaming: false, hint: 'Any server with /audio/transcriptions and /audio/speech in the OpenAI format (LocalAI, Speaches, Kokoro-FastAPI, many gateways). Public https address only.' },
 ];
 
@@ -184,6 +188,8 @@ export function checkAudio(r: SpeakResult): string | null {
 function friendly(svc: string, e: unknown): string {
   const msg = String((e as Error)?.message ?? e).slice(0, 220);
   const label = VOICE_SERVICES.find((s) => s.id === svc)?.label ?? svc;
+  // the HeyGen adapter already words its errors for the user
+  if (svc === 'heygen' && e instanceof AppError) return msg;
   if (/\b401\b|\b403\b|unauthori[sz]ed|invalid.*key|api key/i.test(msg)) return `${label} rejected the key. Check it or paste a new one.`;
   if (/\b402\b|\b429\b|quota|credit|exceeded/i.test(msg)) return `${label} says the account is out of credit or over its limit: ${msg}`;
   if (/\b404\b/.test(msg)) return `${label} says that address or model does not exist (404). Check the model name${svc === 'custom' ? ' and that the address ends at the API root, usually /v1' : ''}.`;
@@ -524,6 +530,8 @@ export class VoiceSetups {
         return new GeminiVoiceProvider({ keys: [key], sttModels: [n.sttModel ?? def.sttModels[0]!, ...def.sttModels].filter((v, i, a) => a.indexOf(v) === i), ttsModels: [n.ttsModel ?? def.ttsModels[0]!, ...def.ttsModels].filter((v, i, a) => a.indexOf(v) === i), timeoutMs, tts: true });
       case 'elevenlabs':
         return new ElevenLabsVoiceProvider({ apiKey: key, voiceId: n.voice, sttModel: n.sttModel, ttsModel: n.ttsModel, timeoutMs });
+      case 'heygen':
+        return new HeyGenVoiceProvider({ apiKey: key, voiceId: n.voice, ttsModel: n.ttsModel, timeoutMs, baseUrl: process.env.HEYGEN_BASE_URL || undefined });
       case 'deepgram':
         return new DeepgramVoiceProvider({ apiKey: key, sttModel: n.sttModel, ttsVoice: n.voice || n.ttsModel, timeoutMs });
       default:
@@ -576,7 +584,7 @@ export class VoiceSetups {
     if (!b) throw new AppError('not_found', 'That voice setup or its key is not there any more.');
     const def = voiceServiceDef(b.n.service);
     if (!def.tts) return [];
-    if (b.p instanceof ElevenLabsVoiceProvider) {
+    if (b.p instanceof ElevenLabsVoiceProvider || b.p instanceof HeyGenVoiceProvider) {
       try {
         await b.p.loadVoices();
       } catch (e) {
