@@ -2,7 +2,6 @@ import type { AgentServices } from '../tools/types.js';
 import { E2BProvider } from './e2b.js';
 import { SandboxManager, type SandboxManagerOptions } from './manager.js';
 import { restoreToSandbox, saveBeforeClose } from './persist.js';
-import { exportSignins } from '../browserState.js';
 import type { SandboxProvider } from './types.js';
 import { baseOwner } from '../../middleware/auth.js';
 import { sandboxConnections } from './connections.js';
@@ -50,14 +49,7 @@ export function createSandboxManager(svc: AgentServices, opts: Partial<SandboxMa
     maxLifeMs: Number(process.env.SANDBOX_MAX_MIN) * 60_000 || undefined,
     maxSessions: Number(process.env.SANDBOX_MAX_SESSIONS) || undefined,
     onStart: async (owner, s, log) => void (await restoreToSandbox(svc, owner, s, log)),
-    onBeforeClose: async (owner, s, log) => {
-      // browser sign-ins first (quick), then changed files; the manager skips this for incognito sessions
-      try {
-        const n = await exportSignins(svc.store, owner, s);
-        if (n > 0) log('save', 'Kept the browser sign-ins for the next computer');
-      } catch {}
-      await saveBeforeClose(svc, owner, s, log);
-    },
+    onBeforeClose: async (owner, s, log) => void (await saveBeforeClose(svc, owner, s, log)),
     ...opts,
   });
 }
