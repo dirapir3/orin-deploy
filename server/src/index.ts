@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { startKeepWarm } from './lib/keepWarm.js';
 import { AgentRuntime } from './agent/runtime.js';
 import { chatRuns } from './agent/chatRuns.js';
 import { buildProviders } from './ai/registry.js';
@@ -101,6 +102,7 @@ const onListen = () => {
 };
 const server = bindHost ? app.listen(config.port, bindHost, onListen) : app.listen(config.port, onListen);
 void durable?.start();
+startKeepWarm({ log: (m) => logger.info(m) });
 
 // Long-lived SSE responses: keep sockets open long enough for slow generations.
 server.requestTimeout = 0;

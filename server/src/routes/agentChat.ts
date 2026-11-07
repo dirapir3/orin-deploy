@@ -11,6 +11,7 @@ import { runAgent } from '../agent/loop.js';
 import { isValidTimezone } from '../agent/cron.js';
 import { chatRuns } from '../agent/chatRuns.js';
 import { buildWorkContext } from '../agent/workContext.js';
+import { quickTools, wantsQuickLane } from '../agent/quickLane.js';
 import { offAppsNotice, withoutOffApps } from '../agent/apps.js';
 import { resolveUploadDocuments } from '../agent/uploads.js';
 import { amendments, runKey } from '../agent/amendments.js';
@@ -89,6 +90,9 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   // apps the user turned off for this character on the Apps page are not offered (chat and calls)
   const appsOff = agent.store.appsOff(owner);
   const tools = withoutOffApps(agent.tools.available(owner, agent.services, { incognito }), appsOff);
+  // quick lane (agent/quickLane.ts): plain conversation gets a short prompt and a few tools; more_tools opens the rest
+  const lite = wantsQuickLane(body, config.agent.quickLane);
+  const runTools = lite ? quickTools(tools) : tools;
   // Fails fast (before streaming) on images the model cannot read, etc.
   let ctx: Awaited<ReturnType<typeof buildAgentContext>>;
   try {
@@ -97,7 +101,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       owner,
       provider,
       signal: controller.signal,
-      persona: { timezone, tools: tools.map((t: { name: string }) => t.name), unavailable: [...agent.unavailable(owner), ...offAppsNotice(appsOff)], character, incognito, work },
+      persona: { timezone, lite, tools: runTools.map((t: { name: string }) => t.name), unavailable: [...agent.unavailable(owner), ...offAppsNotice(appsOff)], character, incognito, work },
     });
   } catch (err) {
     clearTimeout(limit);
@@ -116,7 +120,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   const started = Date.now();
   let chars = 0;
   let served: { provider: string; model: string } = { provider: provider.id, model };
-  sse(res, 'meta', { runId: run.id, provider: provider.id, model, demo: false, agent: true, tools: tools.length, trimmedMessages: ctx.trimmed, summarized: ctx.summarized, incognito });
+  sse(res, 'meta', { runId: run.id, provider: provider.id, model, demo: false, agent: true, tools: runTools.length, lane: lite ? 'quick' : 'full', trimmedMessages: ctx.trimmed, summarized: ctx.summarized, incognito });
   agent.store.bumpUsage(account, 'chat');
   const toolCtx = agent.toolContext(owner, controller.signal, body.mode === 'voice' ? 'voice' : 'chat', requestBaseUrl(req), timezone);
   toolCtx.incognito = incognito;
@@ -134,7 +138,9 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       provider,
       model,
       messages: ctx.messages,
-      tools,
+      tools: runTools,
+      escalate: lite && ctx.fullSystem ? { tools, system: () => ctx.fullSystem!(tools.map((t: { name: string }) => t.name)) } : undefined,
+      firstByteMs: lite ? 10_000 : undefined,
       ctx: toolCtx,
       maxSteps: body.mode === 'voice' ? Math.min(config.agent.maxSteps, 12) : config.agent.maxSteps,
       fast: body.mode === 'voice',

@@ -47,6 +47,8 @@ export interface AgentContextResult {
   summarized: boolean;
   trimmed: number;
   memories: Memory[];
+  /** quick lane only: the full work prompt, swapped in when the model calls more_tools */
+  fullSystem?: (tools: string[]) => string;
 }
 
 /**
@@ -118,5 +120,8 @@ export async function buildAgentContext(
   const out: ProviderMessage[] = [{ role: 'system', content: system }];
   if (summary) out.push({ role: 'system', content: `Summary of the earlier part of this conversation:\n${summary}` });
   out.push(...msgs);
-  return { messages: out, hasImages: base.hasImages, summarized, trimmed, memories };
+  const fullSystem = deps.persona.lite
+    ? (tools: string[]) => buildAgentSystemPrompt(body.preferences, body.mode, { ...deps.persona, lite: false, tools, memories, knowHow })
+    : undefined;
+  return { messages: out, hasImages: base.hasImages, summarized, trimmed, memories, fullSystem };
 }
