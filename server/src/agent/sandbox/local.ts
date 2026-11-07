@@ -485,14 +485,15 @@ export function newestRelayAddress(text: string): { url: string; at?: number } |
     if (!ev || (ev.event !== undefined && ev.event !== 'message') || typeof ev.message !== 'string') continue;
     const time = typeof ev.time === 'number' ? ev.time * 1000 : 0;
     let url: string | undefined;
-    let k: [number, number] = [0, time];
+    let k: [number, number] = [time, 0];
     let at: number | undefined = time || undefined;
     try {
       const m = JSON.parse(ev.message) as Record<string, unknown>;
       const u = pick(m, ['url', 'sandbox_url', 'SANDBOX_URL', 'address', 'public_url']);
       if (typeof u === 'string') url = u;
       const ts = typeof m.ts === 'number' ? m.ts : time;
-      k = [typeof m.epoch === 'number' ? m.epoch : 0, ts];
+      // newest post wins (a reinstalled sandbox app may restart its epoch count); epoch breaks ties
+      k = [ts, typeof m.epoch === 'number' ? m.epoch : 0];
       at = ts || at;
     } catch {
       url = ev.message.match(/https:\/\/[^\s"'<>]+/)?.[0];
@@ -507,7 +508,7 @@ export function newestRelayAddress(text: string): { url: string; at?: number } |
  * When Discovery is a relay feed (like an ntfy.sh topic the sandbox posts its tunnel address to),
  * returns the config with the newest posted address as the URL. The token is never sent to the feed.
  */
-export async function followRelay(cfg: LocalConfig, deps: Deps = {}): Promise<{ cfg: LocalConfig; note?: string; relayed: boolean }> {
+export async function followRelay(cfg: LocalConfig, deps: Deps = {}): Promise<{ cfg: LocalConfig; note?: string; relayed: boolean; posted?: string }> {
   const disc = (cfg.discovery ?? '').trim();
   const feed = disc ? relayFeed(disc) : null;
   if (!feed) return { cfg, relayed: false };
@@ -530,7 +531,17 @@ export async function followRelay(cfg: LocalConfig, deps: Deps = {}): Promise<{ 
   try {
     next = await normaliseLocalUrl(found.url, deps.lookup);
   } catch (e) {
-    return keep(`The address posted on the Discovery link can't be used: ${(e as Error).message}`);
+    const le = e as LocalSandboxError;
+    if (le instanceof LocalSandboxError && le.reason === 'unreachable') {
+      let host = found.url;
+      try {
+        host = new URL(found.url).hostname;
+      } catch {
+        /* keep as posted */
+      }
+      return { cfg: { ...cfg, discovery: '' }, note: '', relayed: true, posted: host };
+    }
+    return keep(`The address posted on the Discovery link can't be used: ${le.message}`);
   }
   const host = new URL(next).hostname;
   let savedHost = '';
@@ -545,6 +556,7 @@ export async function followRelay(cfg: LocalConfig, deps: Deps = {}): Promise<{ 
   const when = mins === null ? '' : mins < 1 ? ', posted just now' : mins < 120 ? `, posted ${mins} min ago` : `, posted ${Math.round(mins / 60)} h ago`;
   const changed = !savedHost || host !== savedHost;
   return {
+    posted: host,
     cfg: { ...cfg, url: next, discovery: '' },
     note: changed ? `Following the newest address your sandbox posted on Discovery (${host}${when}).` : 'Following the address your sandbox posts on Discovery.',
     relayed: true,
@@ -966,6 +978,13 @@ export async function openLocalSession(
   try {
     p = proto ?? (await resolveProtocol(cfg, deps));
   } catch (err) {
+    if (err instanceof LocalSandboxError && relay.posted && err.reason === 'unreachable') {
+      throw new LocalSandboxError(
+        `The newest address your sandbox posted (${relay.posted}) isn't answering, so the sandbox app or its tunnel on the other phone has probably stopped. Open the sandbox app on that phone and start it again; Orin picks up its new address from Discovery by itself.`,
+        err.status,
+        'unreachable',
+      );
+    }
     if (err instanceof LocalSandboxError && relay.note) throw new LocalSandboxError(`${err.message} ${relay.note}`, err.status, err.reason);
     throw err;
   }
