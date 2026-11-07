@@ -182,12 +182,15 @@ export class GeminiVoiceProvider implements VoiceProvider {
   private readonly ttsModels: string[];
   /** model -> time until which it is skipped (busy / quota) */
   private readonly modelCooling = new Map<string, number>();
+  /** model -> running average of ms to first audio (speakStream). The voice tries the fastest first. */
+  private readonly firstAudioAvg = new Map<string, number>();
 
   constructor(private readonly o: Options) {
     this.fetchImpl = o.fetchImpl ?? fetch;
     this.base = (o.baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
     this.sttModels = o.sttModels?.length ? o.sttModels : ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.5-flash', 'gemini-3.8-flash'];
-    this.ttsModels = o.ttsModels?.length ? o.ttsModels : ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts', 'gemini-3.8-flash-tts'];
+    // 3.8-flash-tts first: on the live server it gave first audio in ~1 s vs 4-8 s for 2.5-flash-preview-tts
+    this.ttsModels = o.ttsModels?.length ? o.ttsModels : ['gemini-3.8-flash-tts', 'gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts'];
     this.sttModel = this.sttModels[0]!;
     this.supportsTts = o.tts !== false;
     this.ttsModel = this.supportsTts ? this.ttsModels[0]! : '';
@@ -232,7 +235,11 @@ export class GeminiVoiceProvider implements VoiceProvider {
     const keys = this.o.keys.filter(Boolean);
     if (!keys.length) throw new AppError('voice_not_configured', 'No Gemini key is set for voice.');
     const now = Date.now();
-    const orderedModels = [...models].sort((a, b) => Number((this.modelCooling.get(a) ?? 0) > now) - Number((this.modelCooling.get(b) ?? 0) > now));
+    const resting = (m: string) => Number((this.modelCooling.get(m) ?? 0) > now);
+    // voice: among models that are not resting, the one with the quickest first audio lately goes first
+    // (a model with no timing yet keeps its place in the list via a neutral 2.5 s guess)
+    const speed = (m: string) => (what === 'voice' ? (this.firstAudioAvg.get(m) ?? 2500 + models.indexOf(m)) : models.indexOf(m));
+    const orderedModels = [...models].sort((a, b) => resting(a) - resting(b) || speed(a) - speed(b));
     const orderedKeys = [...keys].sort((a, b) => Number((sharedKeyHealth.cooling.get(keyId(a)) ?? 0) > now) - Number((sharedKeyHealth.cooling.get(keyId(b)) ?? 0) > now));
     const out: { model: string; key: string }[] = [];
     for (const model of orderedModels) for (const key of orderedKeys) if ((this.pairCooling.get(this.pairKey(key, model)) ?? 0) <= now) out.push({ model, key });
@@ -429,7 +436,10 @@ export class GeminiVoiceProvider implements VoiceProvider {
         continue;
       }
       sharedKeyHealth.recordOk(keyId(key), Date.now());
-      trace.push(`${model};200;first=${Date.now() - t0}`);
+      const firstMs = Date.now() - t0;
+      const avg = this.firstAudioAvg.get(model);
+      this.firstAudioAvg.set(model, avg === undefined ? firstMs : Math.round(avg * 0.6 + firstMs * 0.4));
+      trace.push(`${model};200;first=${firstMs}`);
       const rest = (async function* () {
         try {
           for (;;) {
