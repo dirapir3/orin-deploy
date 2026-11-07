@@ -517,7 +517,9 @@ export async function followRelay(cfg: LocalConfig, deps: Deps = {}): Promise<{ 
   let found: { url: string; at?: number } | null = null;
   try {
     await checkLocalUrl(feed, deps.lookup);
-    const res = await f(feed, { headers: { 'user-agent': 'OrinSandbox/1.0', accept: 'application/x-ndjson, application/json, */*' }, redirect: 'manual', signal: AbortSignal.timeout(12_000) });
+    const get = () => f(feed, { headers: { 'user-agent': 'OrinSandbox/1.0', accept: 'application/x-ndjson, application/json, */*' }, redirect: 'manual', signal: AbortSignal.timeout(12_000) });
+    // one retry: a feed read can fail once on a cold server
+    const res = await get().catch(() => new Promise<Response>((r, j) => setTimeout(() => get().then(r, j), 1500)));
     if (!res.ok) {
       await res.body?.cancel().catch(() => undefined);
       return keep(`Couldn't read the Discovery link (it answered ${res.status}), so Orin used the saved URL.`);
