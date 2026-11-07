@@ -65,6 +65,11 @@ export interface ChatProvider {
 export interface VoiceInfo {
   id: string;
   name: string;
+  /** a short sample clip (HeyGen), played from the voice picker */
+  previewUrl?: string;
+  language?: string;
+  /** e.g. 'Public' or 'Your voice' */
+  note?: string;
 }
 
 export interface TranscribeRequest {
