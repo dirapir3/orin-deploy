@@ -65,8 +65,11 @@ export interface RunAgentOptions {
 export function isPassingProviderError(e: unknown): e is AppError {
   if (!(e instanceof AppError)) return false;
   if (e.code === 'cancelled' || e.code === 'invalid_api_key' || e.code === 'provider_bad_request' || e.code === 'validation_error') return false;
-  if (/daily quota|billing/i.test(e.message) && !/All AI providers failed/.test(e.message)) return false;
-  return e.code === 'provider_rate_limited' || e.code === 'provider_unavailable' || e.code === 'timeout' || e.retryable;
+  // a used-up daily quota does not come back in minutes; a per-minute "quota" (Google's wording for
+  // free keys) does, so only the daily one ends the job at once
+  if (/daily quota/i.test(e.message) && !/All AI providers failed/.test(e.message)) return false;
+  if (e.code === 'provider_rate_limited') return true;
+  return e.code === 'provider_unavailable' || e.code === 'timeout' || e.retryable;
 }
 
 const sleep = (ms: number, signal: AbortSignal) =>
