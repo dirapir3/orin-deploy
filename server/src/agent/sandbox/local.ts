@@ -67,6 +67,12 @@ export interface LocalProtocol {
   name?: string;
   /** Discovery was something the cloud can't use (mDNS, LAN); kept, but ignored. */
   note?: string;
+  /**
+   * A "workspace jobs" API (the user's own sandbox app): commands are queued with
+   * POST {prefix}/workspaces/{id}/commands, waited on, and their output read as events;
+   * files go through {prefix}/workspaces/{id}/files/content, rooted at the workspace folder.
+   */
+  jobs?: { prefix: string; workspace: string; guest: string };
 }
 
 export interface LocalConfig {
@@ -82,7 +88,7 @@ interface Deps {
 
 const cap = (s: string, n: number) => (s.length > n ? `…${s.slice(-n)}` : s);
 const EXEC_GUESSES = ['/exec', '/execute', '/run', '/api/exec', '/command', '/process/execute'];
-const DISCOVERY_GUESSES = ['/discovery', '/.well-known/sandbox.json', '/.well-known/orin-sandbox.json', '/openapi.json'];
+const DISCOVERY_GUESSES = ['/discovery', '/.well-known/sandbox.json', '/.well-known/orin-sandbox.json', '/openapi.json', '/v1/openapi.json', '/api/v1/openapi.json'];
 const MAX_EXEC_BYTES = 4 * 1024 * 1024;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const WRITE_CHUNK = 48 * 1024; // base64 chunk when files go through commands
@@ -120,7 +126,7 @@ export async function checkLocalUrl(raw: string, lookup?: LookupFn): Promise<URL
   const kind = privateHostKind(url.hostname);
   if (kind) {
     throw new LocalSandboxError(
-      `${url.hostname} is ${kind}. Orin's server runs in the cloud, so it can't reach it. ${TUNNEL_HELP}`,
+      `${url.hostname} is ${kind}. Orin's server runs in the cloud, not on your phone, so it can't reach it, even when both phones share the same Wi-Fi. ${TUNNEL_HELP}`,
       undefined,
       'private',
     );
@@ -134,6 +140,7 @@ export async function checkLocalUrl(raw: string, lookup?: LookupFn): Promise<URL
   } catch (err) {
     const msg = (err as Error).message || '';
     if (/resolve/i.test(msg)) {
+      if (isQuickTunnel(url.toString())) throw new LocalSandboxError(`${tunnelGone(url.toString())}.`, undefined, 'unreachable');
       throw new LocalSandboxError(`Couldn't find ${url.hostname}. If it's a tunnel address, check the tunnel is still running on the phone.`, undefined, 'unreachable');
     }
     throw new LocalSandboxError(`${url.hostname} points to a private address. Orin's server runs in the cloud, so it can't reach it. ${TUNNEL_HELP}`, undefined, 'private');
@@ -141,6 +148,24 @@ export async function checkLocalUrl(raw: string, lookup?: LookupFn): Promise<URL
   url.hash = '';
   url.search = '';
   return url;
+}
+
+/**
+ * For saving only: a public-looking https address whose name doesn't resolve right now (an expired quick
+ * tunnel) is kept as typed. It is checked again, DNS included, every time it's used, and a Discovery relay
+ * replaces it with the sandbox's newest address.
+ */
+export async function normaliseLocalUrlForSave(raw: string, lookup?: LookupFn): Promise<string> {
+  try {
+    return await normaliseLocalUrl(raw, lookup);
+  } catch (err) {
+    if (!(err instanceof LocalSandboxError) || err.reason !== 'unreachable') throw err;
+    const text = raw.trim();
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+    u.hash = '';
+    u.search = '';
+    return u.toString().replace(/\/+$/, '');
+  }
 }
 
 /** The URL a user typed, cleaned up for storage (no trailing slash). Throws LocalSandboxError on a bad/private one. */
@@ -194,6 +219,20 @@ function fromOpenApi(doc: Record<string, unknown>): Partial<LocalProtocol> | nul
   out.health = find(/(health|ping|status)/i, ['get']);
   const info = doc.info as Record<string, unknown> | undefined;
   if (typeof info?.title === 'string') out.name = info.title;
+  // Workspace jobs API: /…/workspaces/{id}/commands + /…/commands/{id}/wait (+ events)
+  const keys = Object.keys(paths);
+  const cmdPath = keys.find((p) => /\/workspaces\/\{[^}]+\}\/commands$/.test(p) && paths[p] && 'post' in paths[p]!);
+  if (cmdPath) {
+    const prefix = base + cmdPath.replace(/\/workspaces\/\{[^}]+\}\/commands$/, '');
+    const rawPrefix = cmdPath.replace(/\/workspaces\/\{[^}]+\}\/commands$/, '');
+    if (keys.some((p) => p === `${rawPrefix}/commands/{command_id}/wait` || /\/commands\/\{[^}]+\}\/wait$/.test(p))) {
+      out.exec = { method: 'POST', path: `${prefix}/workspaces/{workspace}/commands` };
+      out.health = keys.includes(`${rawPrefix}/health`) ? { method: 'GET', path: `${prefix}/health` } : out.health;
+      out.read = undefined;
+      out.write = undefined;
+      out.jobs = { prefix, workspace: '', guest: '' };
+    }
+  }
   return out.exec ? out : null;
 }
 
@@ -203,6 +242,7 @@ export function protocolFromDoc(doc: unknown, source: string): LocalProtocol | n
   const d = doc as Record<string, unknown>;
   if (d.openapi || d.swagger) {
     const p = fromOpenApi(d);
+    if (p?.jobs) return { ...p, source, exec: p.exec!, name: p.name } as LocalProtocol;
     return p?.exec ? ({ ...p, source, exec: p.exec } as LocalProtocol) : null;
   }
   const eps = (pick(d, ['endpoints', 'routes', 'api', 'paths']) as Record<string, unknown> | undefined) ?? d;
@@ -242,6 +282,22 @@ function unusableDiscovery(disc: string): string | null {
 
 // ---------- HTTP ----------
 
+function isQuickTunnel(base: string): boolean {
+  try {
+    return /(^|\.)trycloudflare\.com$/i.test(new URL(base).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Plain words for "the tunnel address doesn't answer". */
+function tunnelGone(base: string): string {
+  if (isQuickTunnel(base)) {
+    return `${new URL(base).hostname} isn't online. Quick-tunnel (trycloudflare) addresses change every time the tunnel restarts on the phone. If your sandbox posts its address somewhere, put that link in Discovery and Orin follows it; otherwise paste the new address`;
+  }
+  return 'The tunnel address is offline: the tunnel on the phone stopped or its address changed. Start it again, and paste the new address if it changed';
+}
+
 class Client {
   constructor(
     readonly base: string,
@@ -278,7 +334,7 @@ class Client {
     return h;
   }
 
-  async send(ep: Endpoint, o: { body?: unknown; query?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal; auth?: boolean } = {}): Promise<Response> {
+  async send(ep: Endpoint, o: { body?: unknown; raw?: Uint8Array; query?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal; auth?: boolean } = {}): Promise<Response> {
     let url = this.url(ep.path);
     if (o.query) {
       const u = new URL(url);
@@ -290,11 +346,11 @@ class Client {
     const onAbort = () => ctl.abort(o.signal?.reason);
     o.signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      const hasBody = o.body !== undefined && ep.method !== 'GET';
+      const hasBody = (o.body !== undefined || o.raw !== undefined) && ep.method !== 'GET';
       const res = await this.f(url, {
         method: ep.method,
-        headers: this.headers(hasBody ? { 'content-type': 'application/json' } : {}),
-        body: hasBody ? JSON.stringify(o.body) : undefined,
+        headers: this.headers(hasBody ? { 'content-type': o.raw ? 'application/octet-stream' : 'application/json' } : {}),
+        body: hasBody ? (o.raw ? Buffer.from(o.raw) : JSON.stringify(o.body)) : undefined,
         signal: ctl.signal,
         redirect: 'manual',
       });
@@ -310,7 +366,7 @@ class Client {
       const ngrokCode = res.headers.get('ngrok-error-code') ?? '';
       if (!res.ok && (ngrokCode === 'ERR_NGROK_3200' || res.status === 530)) {
         await res.body?.cancel().catch(() => undefined);
-        throw new LocalSandboxError(`The tunnel address is offline (${res.status}): the tunnel on the phone stopped or its address changed. Start it again, and paste the new address if it changed.`, res.status, 'unreachable');
+        throw new LocalSandboxError(`${tunnelGone(this.base)} (${res.status})`, res.status, 'unreachable');
       }
       if (!res.ok && (ngrokCode || res.status === 502 || res.status === 504)) {
         await res.body?.cancel().catch(() => undefined);
@@ -322,7 +378,11 @@ class Client {
       if (o.signal?.aborted) throw o.signal.reason instanceof Error ? o.signal.reason : new Error('aborted');
       const msg = (err as Error)?.message || String(err);
       throw new LocalSandboxError(
-        ctl.signal.aborted ? `The sandbox didn't answer in time (fetch failed: timed out).` : `Couldn't reach the sandbox (fetch failed: ${cap(msg, 120)}). Check the phone is online and the tunnel is running.`,
+        ctl.signal.aborted
+          ? `The sandbox didn't answer in time (fetch failed: timed out).`
+          : isQuickTunnel(this.base)
+            ? `${tunnelGone(this.base)} (fetch failed: ${cap(msg, 80)})`
+            : `Couldn't reach the sandbox (fetch failed: ${cap(msg, 120)}). Check the phone is online and the tunnel is running.`,
         undefined,
         'unreachable',
       );
@@ -389,6 +449,196 @@ function parseExec(res: Response, body: { json?: Record<string, unknown>; text: 
   return { stdout, stderr, exitCode: timedOut ? null : (code ?? (res.ok ? 0 : 1)), ...(timedOut ? { timedOut } : {}) };
 }
 
+// ---------- relay: a feed where the sandbox posts its current address ----------
+
+const TUNNEL_FAMILIES = ['trycloudflare.com', 'ngrok-free.app', 'ngrok-free.dev', 'ngrok.app', 'ngrok.dev', 'ngrok.io', 'loca.lt'];
+const family = (h: string) => h.toLowerCase().split('.').slice(-2).join('.');
+
+/** The ntfy-style feed URL for a Discovery value, or null when Discovery doesn't look like a relay topic. */
+export function relayFeed(disc: string): string | null {
+  if (!/^https:\/\//i.test(disc.trim())) return null;
+  let u: URL;
+  try {
+    u = new URL(disc.trim());
+  } catch {
+    return null;
+  }
+  const seg = u.pathname.split('/').filter(Boolean);
+  const topic = seg[0] ?? '';
+  if (!/^[\w-]{1,64}$/.test(topic) || /^(discovery|openapi|\.well-known|v\d+|api)$/i.test(topic)) return null;
+  if (seg.length === 2 && !/^(json|raw|sse)$/i.test(seg[1]!)) return null;
+  if (seg.length > 2) return null;
+  if (!/ntfy/i.test(u.hostname) && seg.length === 1 && topic.length < 6) return null;
+  return `${u.origin}/${topic}/json?poll=1&since=all`;
+}
+
+/** Newest address in an ntfy JSON-lines feed. Messages may be JSON ({"url": …, "epoch": …, "ts": …}) or plain text with an https address. */
+export function newestRelayAddress(text: string): { url: string; at?: number } | null {
+  let best: { url: string; at?: number; k: [number, number] } | null = null;
+  for (const line of text.split('\n')) {
+    let ev: Record<string, unknown>;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!ev || (ev.event !== undefined && ev.event !== 'message') || typeof ev.message !== 'string') continue;
+    const time = typeof ev.time === 'number' ? ev.time * 1000 : 0;
+    let url: string | undefined;
+    let k: [number, number] = [0, time];
+    let at: number | undefined = time || undefined;
+    try {
+      const m = JSON.parse(ev.message) as Record<string, unknown>;
+      const u = pick(m, ['url', 'sandbox_url', 'SANDBOX_URL', 'address', 'public_url']);
+      if (typeof u === 'string') url = u;
+      const ts = typeof m.ts === 'number' ? m.ts : time;
+      k = [typeof m.epoch === 'number' ? m.epoch : 0, ts];
+      at = ts || at;
+    } catch {
+      url = ev.message.match(/https:\/\/[^\s"'<>]+/)?.[0];
+    }
+    if (!url) continue;
+    if (!best || k[0] > best.k[0] || (k[0] === best.k[0] && k[1] >= best.k[1])) best = { url, at, k };
+  }
+  return best ? { url: best.url, at: best.at } : null;
+}
+
+/**
+ * When Discovery is a relay feed (like an ntfy.sh topic the sandbox posts its tunnel address to),
+ * returns the config with the newest posted address as the URL. The token is never sent to the feed.
+ */
+export async function followRelay(cfg: LocalConfig, deps: Deps = {}): Promise<{ cfg: LocalConfig; note?: string; relayed: boolean }> {
+  const disc = (cfg.discovery ?? '').trim();
+  const feed = disc ? relayFeed(disc) : null;
+  if (!feed) return { cfg, relayed: false };
+  const f = deps.fetchImpl ?? ((u, i) => fetch(u, i));
+  const keep = (note: string) => ({ cfg: { ...cfg, discovery: '' }, note, relayed: true });
+  let found: { url: string; at?: number } | null = null;
+  try {
+    await checkLocalUrl(feed, deps.lookup);
+    const res = await f(feed, { headers: { 'user-agent': 'OrinSandbox/1.0', accept: 'application/x-ndjson, application/json, */*' }, redirect: 'manual', signal: AbortSignal.timeout(12_000) });
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      return keep(`Couldn't read the Discovery link (it answered ${res.status}), so Orin used the saved URL.`);
+    }
+    found = newestRelayAddress(new TextDecoder().decode(await readCapped(res, 1024 * 1024)));
+  } catch (e) {
+    return keep(`Couldn't read the Discovery link (${cap((e as Error).message || String(e), 80)}), so Orin used the saved URL.`);
+  }
+  if (!found) return keep('The Discovery link has no address posted in the last 12 hours, so Orin used the saved URL. Start the sandbox app so it posts one.');
+  let next: string;
+  try {
+    next = await normaliseLocalUrl(found.url, deps.lookup);
+  } catch (e) {
+    return keep(`The address posted on the Discovery link can't be used: ${(e as Error).message}`);
+  }
+  const host = new URL(next).hostname;
+  let savedHost = '';
+  try {
+    savedHost = cfg.url ? new URL(/^https?:\/\//i.test(cfg.url) ? cfg.url : `https://${cfg.url}`).hostname : '';
+  } catch {
+    /* bad saved URL: the relay decides */
+  }
+  const trusted = savedHost ? family(host) === family(savedHost) : TUNNEL_FAMILIES.includes(family(host));
+  if (!trusted) return keep(`The Discovery link posted an address on a different service (${host}), so for safety Orin kept the saved URL and didn't send the token there.`);
+  const mins = found.at ? Math.max(0, Math.round((Date.now() - found.at) / 60_000)) : null;
+  const when = mins === null ? '' : mins < 1 ? ', posted just now' : mins < 120 ? `, posted ${mins} min ago` : `, posted ${Math.round(mins / 60)} h ago`;
+  const changed = !savedHost || host !== savedHost;
+  return {
+    cfg: { ...cfg, url: next, discovery: '' },
+    note: changed ? `Following the newest address your sandbox posted on Discovery (${host}${when}).` : 'Following the address your sandbox posts on Discovery.',
+    relayed: true,
+  };
+}
+
+// ---------- workspace jobs API ----------
+
+const jobPath = (p: LocalProtocol, rest: string) => `${p.jobs!.prefix}${rest}`;
+const RUNNING = /^(queued|pending|starting|running|created)$/i;
+
+async function jsonOf(res: Response, max = 1024 * 1024): Promise<Record<string, unknown>> {
+  const body = await readJsonOrText(res, max);
+  if (!res.ok) {
+    const err = body.json ? pick(body.json, ['error', 'message', 'detail']) : body.text;
+    const e = typeof err === 'object' && err ? (pick(err as Record<string, unknown>, ['message', 'code']) ?? JSON.stringify(err)) : err;
+    throw new LocalSandboxError(`The sandbox answered ${res.status}${e ? `: ${cap(String(e), 200)}` : ''}.`, res.status, 'protocol');
+  }
+  return body.json ?? {};
+}
+
+/** Picks (or creates) the workspace Orin works in: one named "orin", else the first one. */
+async function pickWorkspace(c: Client, p: LocalProtocol): Promise<LocalProtocol> {
+  const j = await jsonOf(await c.send({ method: 'GET', path: jobPath(p, '/workspaces') }, { timeoutMs: 20_000 }));
+  const list = (Array.isArray(j.workspaces) ? j.workspaces : Array.isArray(j.items) ? j.items : Array.isArray(j.data) ? j.data : []) as Record<string, unknown>[];
+  let ws = list.find((w) => String(w.name ?? '').toLowerCase() === 'orin') ?? list[0];
+  if (!ws) {
+    ws = await jsonOf(await c.send({ method: 'POST', path: jobPath(p, '/workspaces') }, { body: { name: 'orin' }, timeoutMs: 30_000 })).catch((e) => {
+      throw new LocalSandboxError(`The sandbox has no workspace and Orin couldn't create one (${(e as Error).message}). Create a workspace in the sandbox app.`, undefined, 'protocol');
+    });
+    ws = ((ws as Record<string, unknown>).workspace as Record<string, unknown>) ?? ws;
+  }
+  const id = String(ws.id ?? '');
+  if (!id) throw new LocalSandboxError('The sandbox listed a workspace without an id.', undefined, 'protocol');
+  const guest = (typeof ws.guest_path === 'string' && ws.guest_path.startsWith('/') ? ws.guest_path : '/workspace').replace(/\/+$/, '');
+  const name = typeof ws.name === 'string' ? ws.name : undefined;
+  return { ...p, jobs: { prefix: p.jobs!.prefix, workspace: id, guest }, workdir: p.workdir ?? `${guest}/orin/work`, name: p.name ?? name };
+}
+
+/** Runs one command through the jobs API: queue it, wait for it, then read its output events. */
+async function runJob(
+  c: Client,
+  p: LocalProtocol,
+  cmd: string,
+  o: { timeoutMs?: number; signal?: AbortSignal; envs?: Record<string, string>; maxBytes?: number; background?: boolean } = {},
+): Promise<ExecResult & { id?: string }> {
+  const timeoutMs = Math.max(1000, o.timeoutMs ?? 60_000);
+  const ws = encodeURIComponent(p.jobs!.workspace);
+  const started = await jsonOf(
+    await c.send({ method: 'POST', path: jobPath(p, `/workspaces/${ws}/commands`) }, { body: { cmd, timeout_ms: Math.min(timeoutMs, 21_600_000), ...(o.envs && Object.keys(o.envs).length ? { env: o.envs } : {}) }, timeoutMs: 30_000, signal: o.signal }),
+  );
+  const id = String(started.id ?? '');
+  if (!id) throw new LocalSandboxError('The sandbox accepted the command but gave no id for it.', undefined, 'protocol');
+  if (o.background) return { stdout: '', stderr: '', exitCode: null, id };
+  const enc = encodeURIComponent(id);
+  const deadline = Date.now() + timeoutMs + 15_000;
+  let st: Record<string, unknown> = started;
+  try {
+    while (RUNNING.test(String(st.status ?? 'queued'))) {
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      const wait = Math.min(25_000, left);
+      st = await jsonOf(await c.send({ method: 'GET', path: jobPath(p, `/commands/${enc}/wait`) }, { query: { timeout_ms: String(wait) }, timeoutMs: wait + 15_000, signal: o.signal }));
+    }
+  } catch (err) {
+    if (o.signal?.aborted) await c.send({ method: 'POST', path: jobPath(p, `/commands/${enc}/cancel`) }, { timeoutMs: 10_000 }).catch(() => undefined);
+    throw err;
+  }
+  const stillRunning = RUNNING.test(String(st.status ?? ''));
+  if (stillRunning) await c.send({ method: 'POST', path: jobPath(p, `/commands/${enc}/cancel`) }, { timeoutMs: 10_000 }).catch(() => undefined);
+  // output
+  const max = o.maxBytes ?? MAX_EXEC_BYTES;
+  let stdout = '';
+  let stderr = '';
+  let after = 0;
+  for (let i = 0; i < 200; i++) {
+    const ev = await jsonOf(await c.send({ method: 'GET', path: jobPath(p, `/commands/${enc}/events`) }, { query: { after: String(after) }, timeoutMs: 30_000, signal: o.signal }), max * 2 + 1024 * 1024);
+    const list = (Array.isArray(ev.events) ? ev.events : []) as Record<string, unknown>[];
+    for (const e of list) {
+      const seq = typeof e.seq === 'number' ? e.seq : after;
+      if (seq > after) after = seq;
+      if (typeof e.data !== 'string') continue;
+      if (e.type === 'stdout' && stdout.length < max) stdout += e.data;
+      else if (e.type === 'stderr' && stderr.length < max) stderr += e.data;
+    }
+    if (!list.length || ev.finished === true || stdout.length >= max) break;
+  }
+  const status = String(st.status ?? '');
+  const timedOut = stillRunning || /time/i.test(status);
+  const code = typeof st.exit_code === 'number' ? st.exit_code : null;
+  if (code === null && !timedOut && typeof st.error === 'string' && st.error && !stderr) stderr = st.error;
+  return { stdout, stderr, exitCode: timedOut ? null : (code ?? (status === 'exited' ? 0 : 1)), ...(timedOut ? { timedOut: true } : {}), id };
+}
+
 // ---------- protocol resolution ----------
 
 /** Errors that end the search for the API at once (no point trying other paths). */
@@ -397,7 +647,14 @@ function fatal(err: unknown): boolean {
   return err.reason === 'rejected' || err.reason === 'unreachable' || err.reason === 'private' || (err.status !== undefined && err.status >= 300 && err.status < 400);
 }
 
-async function tryExec(c: Client, ep: Endpoint): Promise<boolean> {
+async function tryExec(c: Client, ep: Endpoint, p?: LocalProtocol): Promise<boolean> {
+  if (p?.jobs) {
+    const r = await runJob(c, p, 'echo orin-ok', { timeoutMs: 20_000 }).catch((err) => {
+      if (fatal(err)) throw err;
+      return null;
+    });
+    return !!r?.stdout.includes('orin-ok');
+  }
   try {
     const res = await c.send(ep, { body: { command: 'echo orin-ok', cmd: 'echo orin-ok', timeout: 15, timeoutMs: 15_000 }, timeoutMs: 20_000 });
     if (!res.ok) {
@@ -436,7 +693,9 @@ export async function resolveProtocol(cfg: LocalConfig, deps: Deps = {}): Promis
   const f = deps.fetchImpl ?? ((u, i) => fetch(u, i));
   const base = await normaliseLocalUrl(cfg.url, deps.lookup);
   const c = new Client(base, cfg.token, f);
-  const disc = (cfg.discovery ?? '').trim();
+  const rawDisc = (cfg.discovery ?? '').trim();
+  // a relay feed only carries the address (followRelay reads it); the API is worked out from the URL
+  const disc = relayFeed(rawDisc) ? '' : rawDisc;
   let note: string | undefined;
   let proto: LocalProtocol | null = null;
 
@@ -480,7 +739,8 @@ export async function resolveProtocol(cfg: LocalConfig, deps: Deps = {}): Promis
 
   if (proto) {
     c.setAuth({ header: proto.authHeader, scheme: proto.authScheme });
-    if (!(await tryExec(c, proto.exec))) {
+    if (proto.jobs) proto = await pickWorkspace(c, proto);
+    if (!(await tryExec(c, proto.exec, proto))) {
       throw new LocalSandboxError(`The sandbox didn't run a test command at ${proto.exec.method} ${proto.exec.path}.`, undefined, 'protocol');
     }
     return note ? { ...proto, note } : proto;
@@ -528,6 +788,7 @@ class PathMap {
 export class LocalSandboxSession implements SandboxSession {
   readonly provider = 'local';
   private readonly pids = new Set<number>();
+  private readonly jobIds = new Set<string>();
   constructor(
     readonly id: string,
     private readonly c: Client,
@@ -546,6 +807,11 @@ export class LocalSandboxSession implements SandboxSession {
     const cwd = o.cwd ? this.remotePath(o.cwd) : undefined;
     // cwd and env are put into the command itself, so they work whatever fields the sandbox understands.
     const exports = o.envs ? Object.entries(o.envs).filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)).map(([k, v]) => `export ${k}=${shq(this.map.to(v))}; `).join('') : '';
+    if (this.proto.jobs) {
+      // env goes in its own field here: the sandbox keeps the command text, but never stores env values
+      const envs = o.envs ? Object.fromEntries(Object.entries(o.envs).filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)).map(([k, v]) => [k, this.map.to(v)])) : undefined;
+      return runJob(this.c, this.proto, this.wrap(`${cwd ? `cd ${shq(cwd)} && ` : ''}${command}`), { timeoutMs, signal: o.signal, envs, maxBytes: o.maxBytes });
+    }
     const inner = `${cwd ? `cd ${shq(cwd)} && ` : ''}${exports}${command}`;
     const full = this.wrap(inner);
     const res = await this.c.send(this.proto.exec, {
@@ -562,6 +828,12 @@ export class LocalSandboxSession implements SandboxSession {
   }
 
   async execBackground(cmd: string, o: { cwd?: string; envs?: Record<string, string> } = {}): Promise<{ pid: number | null }> {
+    if (this.proto.jobs) {
+      const envs = o.envs ? Object.fromEntries(Object.entries(o.envs).filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)).map(([k, v]) => [k, this.map.to(v)])) : undefined;
+      const r = await runJob(this.c, this.proto, this.wrap(`cd ${shq(this.remotePath(o.cwd ?? SANDBOX_WORKDIR))} && ${this.map.to(cmd)}`), { timeoutMs: 21_600_000, envs, background: true });
+      if (r.id) this.jobIds.add(r.id);
+      return { pid: null };
+    }
     const inner = this.wrap(`${o.cwd || SANDBOX_WORKDIR ? `cd ${shq(this.remotePath(o.cwd ?? SANDBOX_WORKDIR))} && ` : ''}${this.map.to(cmd)}`);
     const bg = `if command -v setsid >/dev/null 2>&1; then setsid nohup sh -c ${shq(inner)} </dev/null >/dev/null 2>&1 & else nohup sh -c ${shq(inner)} </dev/null >/dev/null 2>&1 & fi; echo $!`;
     const r = await this.rawExec(bg, { timeoutMs: 20_000, envs: o.envs });
@@ -572,6 +844,16 @@ export class LocalSandboxSession implements SandboxSession {
 
   async writeFile(path: string, data: string | Uint8Array): Promise<void> {
     const p = this.remotePath(path);
+    const rel = this.workspaceRel(p);
+    if (rel !== null) {
+      const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+      const ws = encodeURIComponent(this.proto.jobs!.workspace);
+      const res = await this.c.send({ method: 'PUT', path: jobPath(this.proto, `/workspaces/${ws}/files/content`) }, { raw: bytes, query: { path: rel, create_parents: 'true' }, timeoutMs: 180_000 });
+      await jsonOf(res).catch((e) => {
+        throw new LocalSandboxError(`Couldn't write ${path} on the sandbox: ${(e as Error).message}`, (e as LocalSandboxError).status, 'protocol');
+      });
+      return;
+    }
     const content = b64(data);
     if (this.proto.write) {
       try {
@@ -595,8 +877,27 @@ export class LocalSandboxSession implements SandboxSession {
     if (done.exitCode !== 0) throw new LocalSandboxError(`Couldn't write ${path} on the sandbox: ${cap(done.stderr || done.stdout, 200)}`);
   }
 
+  /** For the jobs API: the path inside the workspace folder (files API), or null when it's outside it. */
+  private workspaceRel(p: string): string | null {
+    const g = this.proto.jobs?.guest;
+    if (!g || !p.startsWith(`${g}/`)) return null;
+    const rel = p.slice(g.length + 1);
+    return rel && !rel.split('/').includes('..') ? rel : null;
+  }
+
   async readFile(path: string): Promise<Uint8Array> {
     const p = this.remotePath(path);
+    const rel = this.workspaceRel(p);
+    if (rel !== null) {
+      const ws = encodeURIComponent(this.proto.jobs!.workspace);
+      const res = await this.c.send({ method: 'GET', path: jobPath(this.proto, `/workspaces/${ws}/files/content`) }, { query: { path: rel }, timeoutMs: 180_000 });
+      if (res.status === 404) {
+        await res.body?.cancel().catch(() => undefined);
+        throw new LocalSandboxError(`No such file on the sandbox: ${path}`, 404, 'protocol');
+      }
+      if (!res.ok) await jsonOf(res);
+      return await readCapped(res, MAX_FILE_BYTES);
+    }
     if (this.proto.read) {
       try {
         const ep = this.proto.read;
@@ -640,6 +941,11 @@ export class LocalSandboxSession implements SandboxSession {
 
   async close(): Promise<void> {
     // It's the user's own machine, so nothing is deleted; background processes Orin started are stopped.
+    if (this.jobIds.size) {
+      const ids = [...this.jobIds];
+      this.jobIds.clear();
+      await Promise.all(ids.map((id) => this.c.send({ method: 'POST', path: jobPath(this.proto, `/commands/${encodeURIComponent(id)}/cancel`) }, { timeoutMs: 10_000 }).then((r) => r.body?.cancel()).catch(() => undefined)));
+    }
     if (!this.pids.size) return;
     const list = [...this.pids].join(' ');
     this.pids.clear();
@@ -648,12 +954,25 @@ export class LocalSandboxSession implements SandboxSession {
 }
 
 /** Prepares the workspace and returns a ready session. */
-export async function openLocalSession(cfg: LocalConfig, deps: Deps = {}, proto?: LocalProtocol): Promise<{ session: LocalSandboxSession; proto: LocalProtocol; workdir: string }> {
+export async function openLocalSession(
+  given: LocalConfig,
+  deps: Deps = {},
+  proto?: LocalProtocol,
+): Promise<{ session: LocalSandboxSession; proto: LocalProtocol; workdir: string; url: string; relayNote?: string }> {
   const f = deps.fetchImpl ?? ((u, i) => fetch(u, i));
-  const p = proto ?? (await resolveProtocol(cfg, deps));
+  const relay = await followRelay(given, deps);
+  const cfg = relay.cfg;
+  let p: LocalProtocol;
+  try {
+    p = proto ?? (await resolveProtocol(cfg, deps));
+  } catch (err) {
+    if (err instanceof LocalSandboxError && relay.note) throw new LocalSandboxError(`${err.message} ${relay.note}`, err.status, err.reason);
+    throw err;
+  }
   const base = await normaliseLocalUrl(cfg.url, deps.lookup);
   const c = new Client(base, cfg.token, f, { header: p.authHeader, scheme: p.authScheme });
   const raw = async (cmd: string) => {
+    if (p.jobs) return runJob(c, p, cmd, { timeoutMs: 30_000 });
     const res = await c.send(p.exec, { body: { command: cmd, cmd, timeout: 30, timeoutMs: 30_000 }, timeoutMs: 45_000 });
     return parseExec(res, await readJsonOrText(res, 256 * 1024));
   };
@@ -669,7 +988,12 @@ export async function openLocalSession(cfg: LocalConfig, deps: Deps = {}, proto?
   const home = (out.match(/H=(\S*)/)?.[1] ?? '').replace(/\/+$/, '');
   let pairs: [string, string][];
   let workdir: string;
-  if (homeOk) {
+  if (homeOk && p.jobs && wanted.startsWith(`${p.jobs.guest}/`)) {
+    // keep Orin's files inside the workspace folder, so the sandbox's files API reaches them
+    workdir = wanted;
+    const root = wanted.replace(/\/work$/, '');
+    pairs = root !== wanted ? [[SANDBOX_WORKDIR, wanted], ['/home/user', root]] : [[SANDBOX_WORKDIR, wanted]];
+  } else if (homeOk) {
     workdir = wanted;
     pairs = wanted === SANDBOX_WORKDIR ? [] : [[SANDBOX_WORKDIR, wanted]];
   } else {
@@ -685,19 +1009,20 @@ export async function openLocalSession(cfg: LocalConfig, deps: Deps = {}, proto?
   }
   const wrap = bash ? (cmd: string) => `bash -lc ${shq(cmd)}` : (cmd: string) => cmd;
   const id = `local-${Math.random().toString(36).slice(2, 10)}`;
-  return { session: new LocalSandboxSession(id, c, p, new PathMap(pairs), wrap), proto: p, workdir };
+  return { session: new LocalSandboxSession(id, c, p, new PathMap(pairs), wrap), proto: p, workdir, url: base, relayNote: relay.note };
 }
 
 /** One health check: reachable, token accepted, a command runs. Returns a plain-words line about it. */
 export async function checkLocalSandbox(cfg: LocalConfig, deps: Deps = {}): Promise<{ info: string; proto: LocalProtocol }> {
-  const { session, proto, workdir } = await openLocalSession(cfg, deps);
+  const { session, proto, workdir, relayNote } = await openLocalSession(cfg, deps);
   const r = await session.exec('echo ok', { timeoutMs: 20_000 });
   if (!r.stdout.includes('ok')) throw new LocalSandboxError('The sandbox answered but didn\'t run the test command.');
-  const files = proto.read && proto.write ? 'files over its API' : 'files through commands';
+  const files = proto.jobs || (proto.read && proto.write) ? 'files over its API' : 'files through commands';
   const bits = [`Commands work`, files, `works in ${workdir.replace(/^\/data\/data\/com\.termux\/files\/home/, '~')}`];
   if (proto.preview) bits.push('has previews');
   let info = `${bits.join(' · ')}.`;
   if (proto.note) info += ` ${proto.note}`;
+  if (relayNote) info += ` ${relayNote}`;
   return { info, proto };
 }
 

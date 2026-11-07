@@ -5,7 +5,7 @@ import type { AgentStore, VaultRow } from '../store.js';
 import { decrypt, encrypt, revealLogin } from '../vault.js';
 import { DAYTONA_API, DaytonaProvider, checkDaytonaKey } from './daytona.js';
 import { E2BProvider } from './e2b.js';
-import { LocalSandboxError, LocalSandboxProvider, checkLocalSandbox, normaliseLocalUrl } from './local.js';
+import { LocalSandboxError, LocalSandboxProvider, checkLocalSandbox, normaliseLocalUrlForSave } from './local.js';
 import type { SandboxProvider } from './types.js';
 
 /**
@@ -183,7 +183,7 @@ async function cleanApiUrl(def: SandboxProviderDef, raw: string | undefined, loo
   if (def.kind === 'local') {
     if (!(raw ?? '').trim()) throw new AppError('validation_error', 'Paste the sandbox URL.');
     try {
-      return await normaliseLocalUrl(raw!, lookup);
+      return await normaliseLocalUrlForSave(raw!, lookup);
     } catch (e) {
       if (e instanceof LocalSandboxError) throw new AppError('validation_error', e.message);
       throw e;
