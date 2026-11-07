@@ -48,8 +48,8 @@ export interface RunAgentOptions {
    * Quick lane (agent/quickLane.ts): the run starts with a short prompt and a few tools. When the model
    * calls more_tools, the full prompt and these tools are swapped in for the rest of the reply.
    */
-  escalate?: { tools: ToolDef[]; system: () => string; model?: string };
-  /** quick lane only: move on to the next model when one sends nothing for this long */
+  escalate?: { tools: ToolDef[]; system: () => string; model?: string; firstByteMs?: number };
+  /** move on to the next model when one sends nothing at all for this long (a stalled model held one reply for 235 s) */
   firstByteMs?: number;
 }
 
@@ -161,6 +161,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
   let byName = new Map(o.tools.map((t) => [t.name, t]));
   let escalate = o.escalate;
   let model = o.model;
+  let firstByteMs = o.firstByteMs;
   const messages = [...o.messages];
   let text = '';
   let steps = 0;
@@ -223,7 +224,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       signal: o.signal,
       fast: o.fast,
       tools: last || !specs.length ? undefined : specs,
-      firstByteMs: escalate ? o.firstByteMs : undefined,
+      firstByteMs,
     })) {
       if (chunk.type === 'delta') {
         stepText += chunk.text;
@@ -303,6 +304,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       const sysAt = messages.findIndex((m) => m.role === 'system');
       if (sysAt >= 0) messages[sysAt] = { role: 'system', content: escalate.system() };
       if (escalate.model) model = escalate.model;
+      firstByteMs = escalate.firstByteMs;
       escalate = undefined;
       maxSteps++;
     }

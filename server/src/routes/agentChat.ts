@@ -108,6 +108,8 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     run.end();
     throw err;
   }
+  // a model that sends nothing at all for this long is skipped for the next one (work steps may think longer)
+  const fullFirstByteMs = body.mode === 'voice' ? 20_000 : 60_000;
   const fullModel = ctx.hasImages ? config.chat.visionModel : config.chat.model;
   // quick lane: the fast model answers plain conversation (on the free Gemini tier the main model is often over
   // quota, and walking the fallback chain to reach flash-lite cost 4-10 s a turn); work switches back to fullModel
@@ -142,8 +144,8 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       model,
       messages: ctx.messages,
       tools: runTools,
-      escalate: lite && ctx.fullSystem ? { tools, model: fullModel, system: () => ctx.fullSystem!(tools.map((t: { name: string }) => t.name)) } : undefined,
-      firstByteMs: lite ? 10_000 : undefined,
+      escalate: lite && ctx.fullSystem ? { tools, model: fullModel, firstByteMs: fullFirstByteMs, system: () => ctx.fullSystem!(tools.map((t: { name: string }) => t.name)) } : undefined,
+      firstByteMs: lite ? 10_000 : fullFirstByteMs,
       ctx: toolCtx,
       maxSteps: body.mode === 'voice' ? Math.min(config.agent.maxSteps, 12) : config.agent.maxSteps,
       fast: body.mode === 'voice',
