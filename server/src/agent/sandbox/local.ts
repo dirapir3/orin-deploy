@@ -508,7 +508,7 @@ export function newestRelayAddress(text: string): { url: string; at?: number } |
  * When Discovery is a relay feed (like an ntfy.sh topic the sandbox posts its tunnel address to),
  * returns the config with the newest posted address as the URL. The token is never sent to the feed.
  */
-export async function followRelay(cfg: LocalConfig, deps: Deps = {}): Promise<{ cfg: LocalConfig; note?: string; relayed: boolean; posted?: string }> {
+export async function followRelay(cfg: LocalConfig, deps: Deps = {}): Promise<{ cfg: LocalConfig; note?: string; relayed: boolean; posted?: string; dead?: boolean }> {
   const disc = (cfg.discovery ?? '').trim();
   const feed = disc ? relayFeed(disc) : null;
   if (!feed) return { cfg, relayed: false };
@@ -541,7 +541,8 @@ export async function followRelay(cfg: LocalConfig, deps: Deps = {}): Promise<{ 
       } catch {
         /* keep as posted */
       }
-      return { cfg: { ...cfg, discovery: '' }, note: '', relayed: true, posted: host };
+      // the sandbox moved on from the saved URL: never fall back to it (a stale quick-tunnel name can belong to someone else now)
+      return { cfg: { ...cfg, discovery: '' }, note: '', relayed: true, posted: host, dead: true };
     }
     return keep(`The address posted on the Discovery link can't be used: ${le.message}`);
   }
@@ -978,6 +979,7 @@ export async function openLocalSession(
   const cfg = relay.cfg;
   let p: LocalProtocol;
   try {
+    if (relay.dead) throw new LocalSandboxError(`${relay.posted} isn't online.`, 503, 'unreachable');
     p = proto ?? (await resolveProtocol(cfg, deps));
   } catch (err) {
     if (err instanceof LocalSandboxError && relay.posted && err.reason === 'unreachable') {
