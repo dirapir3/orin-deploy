@@ -134,6 +134,7 @@ const EnvSchema = z.object({
   // Agent runtime
   AGENT_ENABLED: bool(true),
   AGENT_MAX_STEPS: int(30),
+  QUICK_LANE: z.string().optional(),
   AGENT_TOOL_TIMEOUT_MS: int(45000),
   TASK_MAX_STEPS: int(40),
   /** How many background tasks one long job may hand itself on to when it runs out of steps. */
@@ -258,6 +259,8 @@ export interface AppConfig {
   };
   agent: {
     enabled: boolean;
+    /** quick lane for plain conversational turns (agent/quickLane.ts); QUICK_LANE=0 turns it off */
+    quickLane: boolean;
     maxSteps: number;
     taskMaxSteps: number;
     maxContinuations: number;
@@ -917,6 +920,7 @@ export function loadConfig(rawEnv: Record<string, string | undefined> = process.
     },
     agent: {
       enabled: e.AGENT_ENABLED,
+      quickLane: e.QUICK_LANE !== '0' && e.QUICK_LANE !== 'false',
       maxSteps: Math.min(Math.max(e.AGENT_MAX_STEPS, 1), 100),
       taskMaxSteps: Math.min(Math.max(e.TASK_MAX_STEPS, 2), 120),
       maxContinuations: Math.min(Math.max(e.AGENT_MAX_CONTINUATIONS, 0), 10),

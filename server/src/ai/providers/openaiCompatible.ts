@@ -168,9 +168,37 @@ export class OpenAICompatibleChatProvider implements ChatProvider {
   }
 
   private async *streamChatOnce(req: ChatRequest): AsyncIterable<ChatChunk> {
+    if (!req.firstByteMs) {
+      yield* this.streamChatInner(req, null);
+      return;
+    }
+    // nothing at all from the model for firstByteMs: stop waiting, so the fallback chain tries the next one
+    const fb = new AbortController();
+    const timer = setTimeout(() => fb.abort(), req.firstByteMs);
+    let got = false;
+    try {
+      for await (const chunk of this.streamChatInner(req, fb.signal)) {
+        if (!got) {
+          got = true;
+          clearTimeout(timer);
+        }
+        yield chunk;
+      }
+    } catch (err) {
+      if (!got && fb.signal.aborted && !req.signal.aborted) {
+        throw new AppError('timeout', `${this.displayName} did not start answering within ${Math.round(req.firstByteMs / 1000)} s.`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async *streamChatInner(req: ChatRequest, firstByte: AbortSignal | null): AsyncIterable<ChatChunk> {
     // An agent step with tools can stream nothing for a long time and then a whole file at once
     // (Gemini sends a tool call in one piece), so it gets minutes, not the chat timeout.
-    const signal = withTimeout(req.signal, req.tools?.length ? Math.max(this.opts.timeoutMs, 300_000) : this.opts.timeoutMs);
+    const overall = withTimeout(req.signal, req.tools?.length ? Math.max(this.opts.timeoutMs, 300_000) : this.opts.timeoutMs);
+    const signal = firstByte ? AbortSignal.any([overall, firstByte]) : overall;
     const body: Record<string, unknown> = {
       model: req.model,
       messages: req.messages.map((m) => {

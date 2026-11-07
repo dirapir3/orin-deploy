@@ -42,6 +42,11 @@ export interface ChatRequest {
   tools?: ToolSpec[];
   /** A voice call: answering quickly matters more than thinking long (Gemini thinks minimally). */
   fast?: boolean;
+  /**
+   * Give up on this model when it sends nothing at all for this long, so the fallback chain moves on
+   * (quick conversational turns only: a stalled free-tier model held one reply for 66 s).
+   */
+  firstByteMs?: number;
 }
 
 export type ChatChunk =

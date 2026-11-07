@@ -4,6 +4,7 @@ import { AppError } from '../errors.js';
 import { WorkTracker } from './craft.js';
 import { amendmentNote, type Amendment } from './amendments.js';
 import { friendlyLabel, friendlySummary } from './friendly.js';
+import { MORE_TOOLS } from './quickLane.js';
 import { toToolSpec, type ToolContext, type ToolDef, type ToolDisplay } from './tools/types.js';
 
 export type AgentEvent =
@@ -43,6 +44,13 @@ export interface RunAgentOptions {
    * every step, and once more before the final answer, so a change they ask for lands in this work.
    */
   takeNotes?: () => Amendment[];
+  /**
+   * Quick lane (agent/quickLane.ts): the run starts with a short prompt and a few tools. When the model
+   * calls more_tools, the full prompt and these tools are swapped in for the rest of the reply.
+   */
+  escalate?: { tools: ToolDef[]; system: () => string };
+  /** quick lane only: move on to the next model when one sends nothing for this long */
+  firstByteMs?: number;
 }
 
 const OUTPUT_LIMIT_NOTE =
@@ -149,8 +157,9 @@ export function isNarration(t: string): boolean {
  * feed results back (errors included, so the model can recover) and continue, up to maxSteps.
  */
 export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
-  const specs = o.tools.map(toToolSpec);
-  const byName = new Map(o.tools.map((t) => [t.name, t]));
+  let specs = o.tools.map(toToolSpec);
+  let byName = new Map(o.tools.map((t) => [t.name, t]));
+  let escalate = o.escalate;
   const messages = [...o.messages];
   let text = '';
   let steps = 0;
@@ -166,7 +175,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
   const failedTools: string[] = [];
 
   // what this run built, checked and failed (agent/craft.ts): no unverified build or hidden failure at the end
-  const tracker = new WorkTracker(o.tools.map((t) => t.name));
+  const tracker = new WorkTracker((o.escalate?.tools ?? o.tools).map((t) => t.name));
   const lastUserMsg = [...o.messages].reverse().find((m) => m.role === 'user');
   if (lastUserMsg && typeof lastUserMsg.content === 'string') tracker.noteRequest(lastUserMsg.content);
   // a run resumed after a restart (or continued in the background) keeps what it already built and checked
@@ -213,6 +222,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
       signal: o.signal,
       fast: o.fast,
       tools: last || !specs.length ? undefined : specs,
+      firstByteMs: escalate ? o.firstByteMs : undefined,
     })) {
       if (chunk.type === 'delta') {
         stepText += chunk.text;
@@ -282,6 +292,17 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
     for (const c of calls) {
       if (!c.id || seen.has(c.id)) c.id = `call_${steps}_${Math.random().toString(36).slice(2, 8)}`;
       seen.add(c.id);
+    }
+    // quick lane: more_tools (or calling a full-toolkit tool directly) opens the full prompt and toolkit for the rest of this reply (no step spent)
+    if (escalate && calls.some((c) => c.name === MORE_TOOLS || (!byName.has(c.name) && escalate!.tools.some((t) => t.name === c.name)))) {
+      const more = byName.get(MORE_TOOLS);
+      specs = escalate.tools.map(toToolSpec);
+      byName = new Map(escalate.tools.map((t) => [t.name, t]));
+      if (more) byName.set(MORE_TOOLS, more);
+      const sysAt = messages.findIndex((m) => m.role === 'system');
+      if (sysAt >= 0) messages[sysAt] = { role: 'system', content: escalate.system() };
+      escalate = undefined;
+      maxSteps++;
     }
     messages.push({ role: 'assistant', content: stepText, toolCalls: calls });
     if (stepText && !/\s$/.test(stepText)) {

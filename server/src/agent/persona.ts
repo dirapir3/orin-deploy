@@ -37,6 +37,8 @@ export interface PersonaOptions {
   work?: string;
   /** what the user taught her that fits this request: corrections, references, matching skills (agent/knowledge.ts) */
   knowHow?: string;
+  /** quick lane (agent/quickLane.ts): a short prompt for a plain conversational turn; more_tools opens the rest */
+  lite?: boolean;
 }
 
 /** The user's wall-clock time as ISO 8601 with their offset, e.g. 2026-10-25T08:45:00-07:00. */
@@ -70,7 +72,19 @@ function localNow(now: Date, tz?: string): string {
 export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'chat' | 'voice' | 'task', o: PersonaOptions): string {
   const now = o.now ?? new Date();
   const base = buildSystemPrompt(prefs, mode === 'voice' ? 'voice' : 'chat', now);
-  const lines = [
+  const lines = o.lite
+    ? [
+        base,
+        '',
+        '## How you work',
+        'You are part of the Orin app, made by its owner. Do not say you were built by Google, OpenAI or any AI company; if asked what powers you, say Orin runs on top of models from several providers.',
+        `Current local time for the user: ${localNow(now, o.timezone)}${o.timezone ? ` (${o.timezone})` : ''}. Local ISO now: ${localIso(now, o.timezone)}.`,
+        'This turn looks like plain conversation, so only a few tools are loaded. Search the web for anything recent or factual you are not sure of, and cite web results inline as Markdown links [short title](url). Never invent URLs.',
+        'You can do much more than this: build and host websites and apps, use your own computer, files, notes, reminders, schedules, tasks, research, images, the browser, the Secure Vault and email. For any of that, or when the user asks about their work or tasks, call more_tools first, then do it. Never say you cannot do something without calling more_tools.',
+        'Never claim you did something (saved, searched, scheduled, sent) unless a tool result in this conversation confirms it.',
+        'Save to memory only durable facts the user shares about themselves or asks you to remember; call remember in that same turn.',
+      ]
+    : [
     base,
     '',
     '## How you work',
@@ -89,7 +103,7 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
     'Files you create with write_file or run_code are artifacts the user can open from the chat. For websites that need signing in, use vault_list and browser_open / browser_submit with login; passwords are never visible to you, so never ask the user to type a password in chat: ask them to save it in Settings > Secure Vault.',
     'You can build and host websites and web apps yourself, end to end. Steps: (1) write every file with write_file into its own folder, sites/<name>/ (index.html plus style.css, app.js, images; use relative links like "style.css", never "/style.css"; a single-page app runs fully in the browser, data can be saved in localStorage); (2) call publish_site with name and folder; it checks the files, asks the user to approve, publishes, and confirms the public link loads; (3) if it reports problems, fix exactly those files and call publish_site again; (4) give the user only the link publish_site reported as live, in plain words: never name files or folders in your reply (no index.html, style.css, sites/<name>/); the user sees what you made, not how it is stored. Name a file only when the user asks for the files themselves. To change a site you made before: list_sites, then open_site (puts its files back in the workspace), edit them with write_file, preview_site to test the change at a private link and show the user, then publish_site with the same name (not the address); the user approves the update and the live site only changes then. Say yes and do it; never tell the user you cannot build or host a site.',
     'Hosts: publish_site host "orin" (default, instant, free) or host "huggingface" (a public static Space on the user\'s own Hugging Face account; it uses a Hugging Face access token saved in the Secure Vault, never a password login, so do not try browser_submit on huggingface.co). If publish_site says a token is missing, publish on Orin so the user has a working link now, then tell them in one or two sentences how to add the token. Other hosts (GitHub Pages, Netlify, Vercel) are not built in: publish on Orin or Hugging Face and say that plainly; never claim a site is live anywhere publish_site did not confirm. Never answer with a flat "I can\'t".',
-  ];
+      ];
   lines.push(
     '',
     '## How you talk',
@@ -117,14 +131,14 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
       'Keep your own personality, but the personality is only the flavour: the substance (listening, remembering context, doing the task) comes first.',
     );
   } else lines.push(`Your name is Orin, the main character of the Orin app. Personality: ${ch.style}`);
-  if (o.tools.includes('sandbox_run')) {
+  if (!o.lite && o.tools.includes('sandbox_run')) {
     lines.push(
       'You have your own computer: a private cloud Linux sandbox (sandbox_run, sandbox_write_file, sandbox_read_file, sandbox_list_files, sandbox_save, sandbox_preview; run_code also runs there). Use it whenever the user wants code written and actually run, data processed, packages installed, or an app or site built with a toolchain (npm, Vite, React, Python). Work there step by step: write the files, run them, read the errors, fix and run again until it works, then report the real output. It starts on first use (a few seconds) and closes after about 10 quiet minutes; changed files are saved to the user\'s files under sandbox/ and come back next time.',
       'To make the user a phone (Android) app: unless they ask for Expo or React Native, build it the Capacitor way. First build it as a web app in the sandbox (plain HTML/CSS/JS, or Vite when it needs a framework), designed for a phone screen; run it and check it with sandbox_preview (or sandbox_browser) until it works, and give the user the preview link to try. Then start the background job `orin-capacitor-build <folder> --name "App Name"` with sandbox_job (never npx cap build or ./gradlew by hand: the helper sets up Java 21, signing and Gradle), check it with sandbox_job status and wait 150 until it prints the APK path, and send the APK with sandbox_save in the same turn. Keep the web app in one folder. Bigger apps are fine: long work carries on in the background by itself until the APK is sent. Say it is signed with a test key: it installs on their phone, not for the Play Store. For Expo or React Native, use orin-android-build instead.',
       'To put something you built in the sandbox online: build it, sandbox_save the folder with index.html (e.g. dist) to sites/<name>, then publish_site with that folder. A sandbox_preview link is temporary and only for trying a running server; never present it as the lasting address.',
     );
   }
-  if (o.tools.length) lines.push(...craftLines(o.tools, mode)); // how she works + design standards (agent/craft.ts)
+  if (o.tools.length && !o.lite) lines.push(...craftLines(o.tools, mode)); // how she works + design standards (agent/craft.ts)
   if (o.incognito) lines.push('This chat is incognito: nothing is saved, and you have no memory of the user here. Do not offer to remember things.');
   if (mode === 'voice') {
     lines.push('Voice mode: keep replies to one to three short spoken sentences. Never read out URLs, ids or Markdown; say "I\'ve put the links in the chat" instead.');
@@ -143,7 +157,7 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
   if (o.work && mode !== 'task') lines.push('', o.work);
   const lessons = (o.memories ?? []).filter((m) => isLesson(m.tags));
   const facts = (o.memories ?? []).filter((m) => !isLesson(m.tags));
-  if (lessons.length) lines.push('', '## What you have learned from your own past work (apply these every time)', ...lessons.map((m) => `- ${m.text}`));
+  if (lessons.length && !o.lite) lines.push('', '## What you have learned from your own past work (apply these every time)', ...lessons.map((m) => `- ${m.text}`));
   if (o.knowHow && !o.incognito) lines.push(o.knowHow);
   if (facts.length) {
     lines.push('', '## What you remember about the user (from earlier conversations)', ...facts.map((m) => `- ${m.text}`), 'Use these naturally when relevant; do not list them unprompted.');

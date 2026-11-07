@@ -1,4 +1,5 @@
 import { durableHealth } from './durable/state.js';
+import { noteActivity } from './lib/keepWarm.js';
 import { agentExtraRouter } from './routes/agentExtra.js';
 import { uploadsRouter } from './routes/uploads.js';
 import { webAppRouter } from './webApp.js';
@@ -93,6 +94,11 @@ export function createApp(deps: Deps) {
     });
   }
   app.use(express.json({ limit: '25mb' }));
+  // keep-warm (lib/keepWarm.ts): any real request counts as the app being used; the self-ping does not
+  app.use((req, _res, next) => {
+    if (!req.headers['x-orin-keep-warm']) noteActivity();
+    next();
+  });
 
   if (!deps.agent) deps.agent = new AgentRuntime({ config, provider: providers.agent, fetchImpl: deps.fetchImpl });
   const agent = deps.agent;
