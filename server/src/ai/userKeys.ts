@@ -5,6 +5,7 @@ import { assertPublicUrl } from '../agent/net.js';
 import { decrypt, encrypt, revealLogin } from '../agent/vault.js';
 import type { AgentStore, VaultRow } from '../agent/store.js';
 import { FallbackChatProvider } from './fallback.js';
+import { codeRouter, GATEWAYS } from './codeModel.js';
 import type { FetchLike } from './http.js';
 import { entryProvider } from './registry.js';
 import type { ChatProvider } from './types.js';
@@ -385,6 +386,18 @@ export function userProviders(ai: UserAi, config: AppConfig, server: { chat: Cha
     chat: label(new FallbackChatProvider([cand(soft(chatP)), ...backup(server.chat)], quiet)),
     agent: label(new FallbackChatProvider([cand(soft(agentP)), ...backup(server.agent)], quiet)),
   };
+  // a gateway key reaches many models: coding and building steps go to its best coding model first
+  if (GATEWAYS.has(ai.provider) && process.env.ORIN_CODE_MODEL !== 'off') {
+    const base = out.agent!;
+    out.agent = codeRouter({
+      base,
+      pinned: (model) => pinModel(entryProvider(entry, ai.key, true, fetchImpl), model),
+      listModels: () => listModels(ai, fetchImpl),
+      userModel: ai.model,
+      providerLabel: ai.provider,
+      preferred: process.env.ORIN_CODE_MODEL || undefined,
+    });
+  }
   if (cache.size > 50) cache.delete(cache.keys().next().value as string);
   cache.set(id, out);
   return out;

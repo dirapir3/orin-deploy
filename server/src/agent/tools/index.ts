@@ -27,6 +27,8 @@ import { connectToolServerTool, forgetKnowHowTool, recallKnowHowTool, rememberKn
 import { designKitTool } from './design.js';
 import { compareToReferenceTool, studyReferenceTool } from './reference.js';
 import { sandboxBrowserTool, sandboxEditFileTool, sandboxJobTool, sandboxLiveViewTool } from './computer.js';
+import { codingTools } from './coding.js';
+import { gitTools } from './git.js';
 
 export const ALL_TOOLS: ToolDef[] = [
   webSearchTool,
@@ -77,6 +79,8 @@ export const ALL_TOOLS: ToolDef[] = [
   sandboxJobTool,
   sandboxBrowserTool,
   sandboxLiveViewTool,
+  ...codingTools,
+  ...gitTools,
 ];
 
 export function buildToolRegistry(extra: ToolDef[] = []): ToolRegistry {

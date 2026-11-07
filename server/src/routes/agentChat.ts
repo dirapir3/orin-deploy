@@ -152,6 +152,13 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       maxOutputTokens: config.agent.maxOutputTokens,
       toolTimeoutMs: config.agent.toolTimeoutMs,
       signal: controller.signal,
+      // a per-minute limit mid-job: wait it out (not on calls, where a long silence is worse)
+      providerWaitMs: body.mode === 'voice' || lite ? 0 : 150_000,
+      onProviderWait: (ms) => {
+        if (controller.signal.aborted) return;
+        run.noteStep('Waiting for the AI');
+        sse(res, 'status', { text: `Waiting ${Math.round(ms / 1000)}s for the AI` });
+      },
       // after every tool step: the point a restart or Try again carries the work on from
       onCheckpoint: incognito ? undefined : (msgs, steps) => chatRuns.journal?.checkpoint(run, msgs, steps),
       // what the user writes in this chat while this reply works (agent/amendments.ts)

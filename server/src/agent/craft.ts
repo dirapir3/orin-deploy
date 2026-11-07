@@ -53,6 +53,22 @@ export const WORK_METHOD: string[] = [
   '- After building, fixing or testing anything, say what you actually checked and how (opened it at phone size, ran the tests, the build finished), and plainly what you did not test (for example: not tried on a real phone, not signed in with a real account). Never call something tested, live or working without a tool result showing it.',
 ];
 
+/** How Orin writes software: shown whenever the computer and the coding tools are there. */
+export const CODING_CRAFT: string[] = [
+  '## Building software like a senior engineer',
+  'You are an expert software engineer. Coding, app building and fixing code are jobs you finish yourself, end to end, on your computer: the user should get working, tested software, not instructions or a code dump.',
+  'The loop, every time:',
+  '1. Understand: what "done" means (a link that works, passing tests, an APK, a merged change). For an existing project, code_map it first (and code_map with query to find the code involved), read README/HANDOFF/AGENTS notes and the files you will touch before you change them. For an uploaded ZIP or instructions file, unpack it, follow its steps in order, and pick up from its last finished step.',
+  '2. Start right: for a new app, scaffold_project from the closest template (web-app for a quick page or tool, react-vite for a richer web app, node-api or python-api for a backend, expo-app for a phone app), or write the whole first version in one sandbox_write_files call. Never write a project one file per call.',
+  '3. Write real code: complete files with no TODOs, placeholders or "rest unchanged"; small focused modules; the app rules as pure functions so they can be tested; input validation and clear error states; no secrets in code (vault keys go in env vars).',
+  '4. Test as you go: add or update automated tests for what you built or fixed (node --test, vitest or pytest), then run_checks. For a bug, first reproduce it with a failing test, then fix the cause, not the symptom. Never edit or delete a test to make it pass unless the test itself is wrong, and say so if it was.',
+  '5. Fix until green: read the failing lines, fix the cause, run_checks again. After two failures the same way, step back: re-read the code and the error, check versions and docs (web_search, fetch_page), try another approach. Install what is missing yourself.',
+  '6. See it run: start web apps and servers and open them (preview_site for a folder, sandbox_run with background true then sandbox_preview for a dev server, review_design for every screen, curl the API endpoints). A build that compiles but was never opened is not done.',
+  '7. Ship: give the link (preview_site / publish_site / deploy_site), the APK or the zipped project (sandbox_save). For a repo: git_commit as you go, git_push and github_create_pr when the user wants it on GitHub.',
+  '8. Report honestly: the result first, then what you checked with the real numbers (12 of 12 tests pass, the page opened at phone size) and what you did not test.',
+  'Edits to existing code: change only what the job needs, match the project\'s style and libraries, use sandbox_edit_file with exact text for small changes, and keep every existing test passing. Big jobs (a whole app, a migration) go in a background task so they can run long; long builds or installs go in sandbox_job.',
+];
+
 /** How Orin works on her own code (her source is public; deploying it stays the user's step). */
 export const SELF_IMPROVEMENT: string[] = [
   '## Improving your own app and server',
@@ -87,7 +103,7 @@ export const LEARNING: string[] = [
   '- Be honest about what this is: you get better at the user\'s work by keeping and applying what they teach you; you are not retraining your model.',
 ];
 
-const BUILD_TOOLS = ['write_file', 'sandbox_write_file', 'sandbox_edit_file', 'publish_site'];
+const BUILD_TOOLS = ['write_file', 'sandbox_write_file', 'sandbox_write_files', 'sandbox_edit_file', 'publish_site'];
 
 /** The craft block for the system prompt, sized to the mode and the tools available. */
 export function craftLines(tools: string[], mode: 'chat' | 'voice' | 'task'): string[] {
@@ -96,6 +112,7 @@ export function craftLines(tools: string[], mode: 'chat' | 'voice' | 'task'): st
   const out = ['', ...WORK_METHOD];
   if (mode === 'task') out.push(FINAL_CHECK);
   if (tools.includes('remember_know_how')) out.push('', ...LEARNING.filter((l) => !/connect_tool_server/.test(l) || tools.includes('connect_tool_server')));
+  if (tools.includes('run_checks')) out.push('', ...CODING_CRAFT.filter((l) => !/git_push/.test(l) || tools.includes('git_commit')));
   if (tools.includes('sandbox_run')) out.push('', ...SELF_IMPROVEMENT);
   if (canBuild) out.push('', ...DESIGN_STANDARDS.filter((l) => ['review_design', 'design_kit', 'study_reference'].every((t) => tools.includes(t) || !l.includes(t))));
   return out;
@@ -108,12 +125,20 @@ const CODE_FILE = /\.(m?js|cjs|ts|py|sh|go|rs|java|kt|rb|php)$/i;
 const VERIFY_UI = new Set(['review_design']);
 const SHIP_CMD = /assemble(Debug|Release)|bundleRelease|\bcap (sync|build|copy)\b|eas build|expo (export|prebuild)|build:apk|orin-(android|capacitor)-build/i;
 const LOOKUP = /^(web_search|news_search|deep_research|fetch_page|study_source|tool_servers|browse|recall|task_status|datetime|list_|get_|read_|search_|sandbox_read_file|sandbox_list_files|sandbox_live_view)/;
-const RUNS_CODE = new Set(['sandbox_run', 'run_code', 'sandbox_job', 'review_design', 'preview_site', 'check_site', 'publish_site', 'sandbox_browser']);
+const RUNS_CODE = new Set(['sandbox_run', 'run_code', 'sandbox_job', 'run_checks', 'review_design', 'preview_site', 'check_site', 'publish_site', 'sandbox_browser']);
 
 function pathOf(args: unknown): string {
   if (!args || typeof args !== 'object') return '';
   const a = args as Record<string, unknown>;
   return typeof a.path === 'string' ? a.path : typeof a.file === 'string' ? a.file : '';
+}
+
+/** sandbox_write_files: every path, so one UI or code file among them marks the work */
+function filesOf(args: unknown): string {
+  const f = (args as { files?: { path?: unknown }[] } | null)?.files;
+  if (!Array.isArray(f)) return '';
+  const paths = f.map((x) => (typeof x?.path === 'string' ? x.path : ''));
+  return paths.find((x) => UI_FILE.test(x)) ?? paths.find((x) => CODE_FILE.test(x)) ?? paths[0] ?? '';
 }
 
 /**
@@ -143,7 +168,7 @@ export class WorkTracker {
 
   constructor(toolNames: string[], private readonly maxGates = 2) {
     this.canReview = toolNames.includes('review_design');
-    this.canRun = toolNames.some((t) => t === 'sandbox_run' || t === 'run_code');
+    this.canRun = toolNames.some((t) => t === 'sandbox_run' || t === 'run_code' || t === 'run_checks');
     this.canLearn = toolNames.includes('learn_lesson');
     this.canKnow = toolNames.includes('remember_know_how');
   }
@@ -155,8 +180,8 @@ export class WorkTracker {
 
   /** Record one finished tool call. Returns a recovery note for the model when it is going in circles. */
   record(name: string, args: unknown, ok: boolean, content: string): string | null {
-    const p = pathOf(args);
-    if (ok && ['write_file', 'sandbox_write_file', 'sandbox_edit_file'].includes(name)) {
+    const p = name === 'sandbox_write_files' ? filesOf(args) : pathOf(args);
+    if (ok && ['write_file', 'sandbox_write_file', 'sandbox_write_files', 'sandbox_edit_file'].includes(name)) {
       if (UI_FILE.test(p)) this.uiDirty = true;
       else if (CODE_FILE.test(p)) {
         this.codeDirty = true;

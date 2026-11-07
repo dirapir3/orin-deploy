@@ -51,12 +51,43 @@ export interface RunAgentOptions {
   escalate?: { tools: ToolDef[]; system: () => string; model?: string; firstByteMs?: number };
   /** move on to the next model when one sends nothing at all for this long (a stalled model held one reply for 235 s) */
   firstByteMs?: number;
+  /**
+   * When every model fails with a passing error (rate limit, overloaded, timeout) before a step sent
+   * anything, wait and try that step again instead of ending the work, up to this many ms of waiting
+   * in total (0 = never). Free keys hit per-minute limits mid-job; a one-minute wait saves the job.
+   */
+  providerWaitMs?: number;
+  /** told before each such wait (the UI can say "waiting for the AI") */
+  onProviderWait?: (ms: number, error: AppError) => void;
 }
+
+/** errors that pass with time: rate limits per minute, overloaded models, a timeout, a dropped connection */
+export function isPassingProviderError(e: unknown): e is AppError {
+  if (!(e instanceof AppError)) return false;
+  if (e.code === 'cancelled' || e.code === 'invalid_api_key' || e.code === 'provider_bad_request' || e.code === 'validation_error') return false;
+  if (/daily quota|billing/i.test(e.message) && !/All AI providers failed/.test(e.message)) return false;
+  return e.code === 'provider_rate_limited' || e.code === 'provider_unavailable' || e.code === 'timeout' || e.retryable;
+}
+
+const sleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(new AppError('cancelled', 'Cancelled.'));
+    const t = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(new AppError('cancelled', 'Cancelled.'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 
 const OUTPUT_LIMIT_NOTE =
   'Your last reply was cut off by the output limit before anything was sent, so nothing happened. ' +
   'Do it again in smaller pieces: write a big file in parts (sandbox_write_file with the first part, then ' +
   'sandbox_write_file with append: true for each next part, about 300 lines each), or keep each tool call short.';
+const PROVIDER_WAITS = [8_000, 20_000, 40_000, 60_000];
 const EMPTY_NOTE = 'Your last reply was empty. Carry on: call the next tool you need, or give your final answer.';
 const BUDGET_NOTE =
   'Step budget reached. Answer now without calling tools: say plainly what is finished (with links or files) and ' +
@@ -97,7 +128,19 @@ function parseArgs(raw: string): unknown {
 }
 
 /** Tools that change or read a shared computer/project state, so a batch of them must keep its order. */
-export const STATEFUL_TOOL = /^(sandbox_|computer_|upload_to_computer|deliver_project|publish_site|preview_site|unpublish_site|build_|deploy|git_|apk_|write_file|delete_file)/;
+export const STATEFUL_TOOL = /^(sandbox_|computer_|upload_to_computer|deliver_project|publish_site|preview_site|unpublish_site|build_|deploy|git_|apk_|write_file|delete_file|code_map|run_checks|scaffold_project|github_)/;
+
+/**
+ * Some open models leak their chat-format tokens into the tool name ("sandbox_write_file<|channel|>json",
+ * "functions.sandbox_run", "<tool>run_checks"): keep only the name so the call still runs.
+ */
+export function cleanToolName(name: string): string {
+  let n = (name ?? '').trim();
+  n = n.replace(/<\|[^|]*\|>.*$/s, '').replace(/<\/?[a-z_]+>/gi, '');
+  n = n.replace(/^(functions|function|tools|tool|default_api)[.:]/i, '');
+  n = n.replace(/[^A-Za-z0-9_.-].*$/s, '');
+  return n || name;
+}
 
 export async function executeTool(tool: ToolDef | undefined, call: ToolCall, ctx: ToolContext, timeoutMs: number) {
   if (!tool) return { ok: false, content: `Error: unknown tool "${call.name}". Use only the tools provided.`, summary: 'Unknown tool' };
@@ -197,6 +240,8 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
   let handedOff = false;
   let maxSteps = o.maxSteps;
   let amendRounds = 0;
+  let providerWaits = 0;
+  let waitedMs = 0;
   /** what the user said mid-work goes in as their own words (a user-side turn: Gemini drops mid-chat system messages) */
   const takeNotes = (): boolean => {
     let notes: Amendment[] = [];
@@ -219,28 +264,43 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
     let stepText = '';
     const calls: ToolCall[] = [];
     finishReason = 'stop';
-    for await (const chunk of o.provider.streamChat({
-      model,
-      messages: last ? [...messages, { role: 'system', content: BUDGET_NOTE }] : messages,
-      maxOutputTokens: o.maxOutputTokens,
-      temperature: o.temperature,
-      signal: o.signal,
-      fast: o.fast,
-      tools: last || !specs.length ? undefined : specs,
-      firstByteMs,
-    })) {
-      if (chunk.type === 'delta') {
-        stepText += chunk.text;
-        o.onEvent({ type: 'delta', text: chunk.text });
-      } else if (chunk.type === 'tool_call') calls.push(chunk.call);
-      else if (chunk.type === 'usage') {
-        inputTokens += chunk.inputTokens ?? 0;
-        outputTokens += chunk.outputTokens ?? 0;
-      } else if (chunk.type === 'finish') finishReason = chunk.reason;
-      else if (chunk.type === 'served') {
-        servedBy = { provider: chunk.provider, model: chunk.model };
-        o.onEvent({ type: 'served', provider: chunk.provider, model: chunk.model });
+    try {
+      for await (const chunk of o.provider.streamChat({
+        model,
+        messages: last ? [...messages, { role: 'system', content: BUDGET_NOTE }] : messages,
+        maxOutputTokens: o.maxOutputTokens,
+        temperature: o.temperature,
+        signal: o.signal,
+        fast: o.fast,
+        tools: last || !specs.length ? undefined : specs,
+        firstByteMs,
+      })) {
+        if (chunk.type === 'delta') {
+          stepText += chunk.text;
+          o.onEvent({ type: 'delta', text: chunk.text });
+        } else if (chunk.type === 'tool_call') calls.push(chunk.call);
+        else if (chunk.type === 'usage') {
+          inputTokens += chunk.inputTokens ?? 0;
+          outputTokens += chunk.outputTokens ?? 0;
+        } else if (chunk.type === 'finish') finishReason = chunk.reason;
+        else if (chunk.type === 'served') {
+          servedBy = { provider: chunk.provider, model: chunk.model };
+          o.onEvent({ type: 'served', provider: chunk.provider, model: chunk.model });
+        }
       }
+    } catch (e) {
+      // Every model failed before this step sent anything, with an error that passes (a per-minute
+      // limit, an overloaded model): wait and redo the step instead of throwing away the work so far.
+      const budget = o.providerWaitMs ?? 0;
+      if (o.signal.aborted || stepText || calls.length || !isPassingProviderError(e) || waitedMs >= budget) throw e;
+      const wait = Math.min(PROVIDER_WAITS[Math.min(providerWaits, PROVIDER_WAITS.length - 1)]!, budget - waitedMs);
+      providerWaits++;
+      waitedMs += wait;
+      console.warn(`[agent] step ${steps}: ${e.code} (${e.message.slice(0, 120)}); waiting ${Math.round(wait / 1000)}s and trying the step again`);
+      o.onProviderWait?.(wait, e);
+      await sleep(wait, o.signal);
+      steps--;
+      continue;
     }
     text += stepText;
     if (!calls.length && !stepText.trim() && (finishReason === 'length' ? recoveries < 2 : emptyNudges < 1)) {
@@ -297,6 +357,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
     for (const c of calls) {
       if (!c.id || seen.has(c.id)) c.id = `call_${steps}_${Math.random().toString(36).slice(2, 8)}`;
       seen.add(c.id);
+      c.name = cleanToolName(c.name);
     }
     // quick lane: more_tools (or calling a full-toolkit tool directly) opens the full prompt and toolkit for the rest of this reply (no step spent)
     if (escalate && calls.some((c) => c.name === MORE_TOOLS || (!byName.has(c.name) && escalate!.tools.some((t) => t.name === c.name)))) {

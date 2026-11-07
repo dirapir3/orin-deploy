@@ -456,6 +456,9 @@ export class AgentRuntime {
       signal,
       onEvent,
       onCheckpoint: checkpoint,
+      // background work waits out per-minute limits instead of failing the job
+      providerWaitMs: 6 * 60_000,
+      onProviderWait: (ms, e) => this.store.addTaskEvent(task.id, 'note', `The AI is busy (${e.code === 'provider_rate_limited' ? 'rate limit' : 'unavailable'}); trying again in ${Math.round(ms / 1000)}s`),
       // what the user says in the chat while this runs (add_to_task, or a reply that moved here)
       takeNotes: () => {
         const notes = amendments.take(taskKey(task.id));
