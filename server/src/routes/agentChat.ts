@@ -109,7 +109,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     throw err;
   }
   // a model that sends nothing at all for this long is skipped for the next one (work steps may think longer)
-  const fullFirstByteMs = body.mode === 'voice' ? 20_000 : 60_000;
+  const fullFirstByteMs = body.mode === 'voice' ? 20_000 : 30_000;
   const fullModel = ctx.hasImages ? config.chat.visionModel : config.chat.model;
   // quick lane: the fast model answers plain conversation (on the free Gemini tier the main model is often over
   // quota, and walking the fallback chain to reach flash-lite cost 4-10 s a turn); work switches back to fullModel
