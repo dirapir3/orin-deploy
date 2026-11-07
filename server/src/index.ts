@@ -108,7 +108,7 @@ startKeepWarm({ log: (m) => logger.info(m) });
 server.requestTimeout = 0;
 server.headersTimeout = 65_000;
 
-const shutdown = (signal: string) => {
+const shutdown = (signal: string, code = 0) => {
   logger.info('shutting down', { signal });
   // chat replies still working are written down as they are now: the next server carries them on
   try {
@@ -120,10 +120,27 @@ const shutdown = (signal: string) => {
     agent.store.close();
     // Save the last changes before the host wipes the disk.
     if (durable) await durable.flush(18_000).catch(() => undefined);
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 2_000).unref();
+    server.close(() => process.exit(code));
+    setTimeout(() => process.exit(code), 2_000).unref();
   });
   setTimeout(() => process.exit(1), durable ? 27_000 : 10_000).unref();
 };
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Start-up restore lost to Firestore's daily quota: this run has a blank data folder and saves nothing.
+// Check with one cheap read every 10 minutes; once Firestore answers, restart (the host starts a fresh
+// process, which restores the saved data and turns saving back on).
+if (durable?.quotaBlocked()) {
+  const every = Math.max(60, Number(process.env.DURABLE_RECOVER_SEC) || 600) * 1000;
+  logger.warn(`[durable] saved data not restored (Firestore quota); checking again every ${every / 60_000} min`);
+  const t = setInterval(() => {
+    void durable.firestoreAnswers().then((ok) => {
+      if (!ok) return;
+      clearInterval(t);
+      logger.warn('[durable] Firestore answers again: restarting to bring back the saved data');
+      shutdown('durable-recovered', 1);
+    });
+  }, every);
+  t.unref();
+}

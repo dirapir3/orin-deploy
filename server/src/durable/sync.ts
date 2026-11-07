@@ -149,6 +149,21 @@ export class DurableSync {
     return false;
   }
 
+  /** The start-up restore was lost to Firestore's daily quota (429): saving is off and the data folder is blank. */
+  quotaBlocked(): boolean {
+    return !this.st.restored && /\b429\b|RESOURCE_EXHAUSTED|quota/i.test(this.st.lastError ?? '');
+  }
+
+  /** One cheap read: true when Firestore answers again (the quota reset). */
+  async firestoreAnswers(): Promise<boolean> {
+    try {
+      await this.o.client.get(META, 'lease');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async restoreOnce() {
     this.remote.clear();
     this.protectedPaths.clear();
