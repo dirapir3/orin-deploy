@@ -5,6 +5,7 @@ import type { AgentStore, VaultRow } from '../store.js';
 import { decrypt, encrypt, revealLogin } from '../vault.js';
 import { DAYTONA_API, DaytonaProvider, checkDaytonaKey } from './daytona.js';
 import { E2BProvider } from './e2b.js';
+import { LocalSandboxError, LocalSandboxProvider, checkLocalSandbox, normaliseLocalUrl } from './local.js';
 import type { SandboxProvider } from './types.js';
 
 /**
@@ -22,11 +23,13 @@ import type { SandboxProvider } from './types.js';
  * key, out of credit, provider down) the manager moves on to the next; see manager.ts.
  */
 
-export type SandboxProviderId = 'e2b' | 'daytona';
+export type SandboxProviderId = 'e2b' | 'daytona' | 'local';
 
 export interface SandboxProviderDef {
   id: SandboxProviderId;
   label: string;
+  /** 'cloud': an API key for a hosted service; 'local': the user's own sandbox (URL + token + optional Discovery) */
+  kind: 'cloud' | 'local';
   keyUrl: string;
   keyHint: string;
   /** a self-hosted API address may be entered */
@@ -39,6 +42,7 @@ export const SANDBOX_PROVIDERS: SandboxProviderDef[] = [
   {
     id: 'e2b',
     label: 'E2B',
+    kind: 'cloud',
     keyUrl: 'https://e2b.dev/dashboard?tab=keys',
     keyHint: 'Starts with e2b_',
     customApiUrl: false,
@@ -48,11 +52,22 @@ export const SANDBOX_PROVIDERS: SandboxProviderDef[] = [
   {
     id: 'daytona',
     label: 'Daytona',
+    kind: 'cloud',
     keyUrl: 'https://app.daytona.io/dashboard/keys',
     keyHint: 'From Daytona > Dashboard > API Keys',
     customApiUrl: true,
     can: ['Commands, files and background jobs', 'Your saved work folder carries over'],
     cannot: ['No website preview links or live browser view yet', "No Android SDK or browser tools from Orin's workspace image"],
+  },
+  {
+    id: 'local',
+    label: 'Local sandbox',
+    kind: 'local',
+    keyUrl: '',
+    keyHint: 'The token your sandbox shows',
+    customApiUrl: true,
+    can: ['Commands, files and background jobs on your own device', 'Website previews when its Discovery gives a preview address'],
+    cannot: ["Orin's server is in the cloud, so the URL must be public (a tunnel like ngrok), not a Wi-Fi address", 'No live browser view; only the tools installed on that device'],
   },
 ];
 
@@ -69,6 +84,8 @@ export interface Health {
   state: HealthState;
   checkedAt?: number;
   error?: string;
+  /** plain words about what a passing check found (local sandboxes) */
+  info?: string;
   failedUntil?: number;
 }
 
@@ -78,6 +95,8 @@ export interface SandboxConnectionPublic {
   providerLabel: string;
   label: string;
   apiUrl?: string;
+  /** local sandboxes: what was entered as Discovery (pasted JSON is summarised, never echoed whole) */
+  discovery?: string;
   last4: string;
   enabled: boolean;
   isDefault: boolean;
@@ -99,6 +118,7 @@ interface ConnNotes {
   provider: SandboxProviderId;
   label: string;
   apiUrl?: string;
+  discovery?: string;
   createdAt: number;
 }
 
@@ -148,6 +168,11 @@ export function providerDef(id: string): SandboxProviderDef {
 
 function cleanKey(provider: SandboxProviderId, key: string): string {
   const k = (key ?? '').trim();
+  if (provider === 'local') {
+    if (!k) throw new AppError('validation_error', 'Paste the token your sandbox shows.');
+    if (k.length > 4000 || /\s/.test(k)) throw new AppError('validation_error', 'That does not look like a token (it has spaces or is too long).');
+    return k;
+  }
   if (!k) throw new AppError('validation_error', 'Paste the API key.');
   if (k.length > 1000 || /\s/.test(k)) throw new AppError('validation_error', 'That does not look like an API key (it has spaces or is too long).');
   if (provider === 'e2b' && !k.startsWith('e2b_')) throw new AppError('validation_error', 'E2B API keys start with "e2b_". Copy it from E2B > Dashboard > API Keys.');
@@ -155,6 +180,15 @@ function cleanKey(provider: SandboxProviderId, key: string): string {
 }
 
 async function cleanApiUrl(def: SandboxProviderDef, raw: string | undefined, lookup?: Parameters<typeof assertPublicUrl>[1]): Promise<string | undefined> {
+  if (def.kind === 'local') {
+    if (!(raw ?? '').trim()) throw new AppError('validation_error', 'Paste the sandbox URL.');
+    try {
+      return await normaliseLocalUrl(raw!, lookup);
+    } catch (e) {
+      if (e instanceof LocalSandboxError) throw new AppError('validation_error', e.message);
+      throw e;
+    }
+  }
   const v = (raw ?? '').trim().replace(/\/+$/, '');
   if (!v) return undefined;
   if (!def.customApiUrl) throw new AppError('validation_error', `${def.label} does not take a custom API address.`);
@@ -177,12 +211,27 @@ async function cleanApiUrl(def: SandboxProviderDef, raw: string | undefined, loo
   return v;
 }
 
+function cleanDiscovery(def: SandboxProviderDef, raw: string | undefined): string | undefined {
+  const v = (raw ?? '').trim();
+  if (!v) return undefined;
+  if (def.kind !== 'local') throw new AppError('validation_error', `${def.label} does not take a Discovery value.`);
+  if (v.length > 20_000) throw new AppError('validation_error', 'Discovery is too long (20,000 characters at most). Paste its URL instead.');
+  return v;
+}
+
+/** What the app shows for Discovery: a short URL/name as it is, pasted JSON only as a summary. */
+function discoverySummary(d: string | undefined): string | undefined {
+  if (!d) return undefined;
+  if (d.startsWith('{')) return 'Pasted description';
+  return d.length > 120 ? `${d.slice(0, 117)}…` : d;
+}
+
 function readNotes(row: VaultRow): ConnNotes | null {
   if (!row.notesEnc) return null;
   try {
     const n = JSON.parse(decrypt(row.notesEnc)) as Partial<ConnNotes>;
     if (n.kind !== MARK || !n.id || !n.provider || !SANDBOX_PROVIDERS.some((p) => p.id === n.provider)) return null;
-    return { kind: MARK, id: n.id, provider: n.provider, label: n.label || n.provider, apiUrl: n.apiUrl || undefined, createdAt: n.createdAt || row.createdAt };
+    return { kind: MARK, id: n.id, provider: n.provider, label: n.label || n.provider, apiUrl: n.apiUrl || undefined, ...(n.discovery ? { discovery: n.discovery } : {}), createdAt: n.createdAt || row.createdAt };
   } catch {
     return null;
   }
@@ -196,7 +245,7 @@ function vaultFields(n: ConnNotes) {
   return {
     name: `${n.label} sandbox key`,
     domain: n.provider === 'e2b' ? 'e2b.dev' : n.apiUrl ? new URL(n.apiUrl).hostname : 'app.daytona.io',
-    username: `Sandbox key · ${def.label}`,
+    username: n.provider === 'local' ? 'Sandbox token · Local sandbox' : `Sandbox key · ${def.label}`,
     notes: JSON.stringify(n),
   };
 }
@@ -205,6 +254,8 @@ export function friendlyHealthError(provider: string, e: unknown): string {
   const status = (e as { status?: number })?.status;
   const msg = errText(e);
   const label = SANDBOX_PROVIDERS.find((p) => p.id === provider)?.label ?? provider;
+  // the local adapter already speaks plain words (tunnel down, token rejected, private address, ...)
+  if (e instanceof LocalSandboxError) return e.message.slice(0, 400);
   if (status === 401 || status === 403 || /\b401\b|\b403\b|invalid api key|unauthori[sz]ed|invalid credentials/i.test(msg)) return `${label} rejected the key. Check it or paste a new one.`;
   if (status === 402 || status === 429 || /\b402\b|\b429\b|quota|credit|limit|rate/i.test(msg)) return `${label} says the account is out of credit or over its limit: ${msg}`;
   if (/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|timeout|timed out|network/i.test(msg)) return `Couldn't reach ${label} just now (${msg}).`;
@@ -277,6 +328,7 @@ export class SandboxConnections {
       providerLabel: providerDef(n.provider).label,
       label: n.label,
       ...(n.apiUrl ? { apiUrl: n.apiUrl } : {}),
+      ...(n.discovery ? { discovery: discoverySummary(n.discovery) } : {}),
       last4: last4(revealLogin(row).password),
       enabled: !s.disabled.includes(n.id),
       isDefault: def === n.id,
@@ -303,21 +355,22 @@ export class SandboxConnections {
     return out;
   }
 
-  async add(account: string, input: { provider: string; label?: string; key: string; apiUrl?: string }): Promise<SandboxConnectionPublic> {
+  async add(account: string, input: { provider: string; label?: string; key: string; apiUrl?: string; discovery?: string }): Promise<SandboxConnectionPublic> {
     const def = providerDef(input.provider);
     const key = cleanKey(def.id, input.key);
     const apiUrl = await cleanApiUrl(def, input.apiUrl, this.o.lookup);
+    const discovery = cleanDiscovery(def, input.discovery);
     if (this.st.listVault(account).length >= 100) throw new AppError('validation_error', 'The vault holds up to 100 entries. Delete some first.');
     const taken = new Set(this.rows(account).map((x) => x.n.label.toLowerCase()));
     let label = (input.label ?? '').trim().slice(0, 60) || def.label;
     for (let i = 2; taken.has(label.toLowerCase()); i++) label = `${(input.label ?? '').trim().slice(0, 56) || def.label} ${i}`;
-    const n: ConnNotes = { kind: MARK, id: randomUUID(), provider: def.id, label, ...(apiUrl ? { apiUrl } : {}), createdAt: this.now() };
+    const n: ConnNotes = { kind: MARK, id: randomUUID(), provider: def.id, label, ...(apiUrl ? { apiUrl } : {}), ...(discovery ? { discovery } : {}), createdAt: this.now() };
     const f = vaultFields(n);
     this.st.insertVault(account, { name: f.name, domain: f.domain, usernameEnc: encrypt(f.username), passwordEnc: encrypt(key), notesEnc: encrypt(f.notes) });
     return this.list(account).find((c) => c.id === n.id)!;
   }
 
-  async update(account: string, id: string, input: { label?: string; key?: string; apiUrl?: string; enabled?: boolean }): Promise<SandboxConnectionPublic> {
+  async update(account: string, id: string, input: { label?: string; key?: string; apiUrl?: string; discovery?: string; enabled?: boolean }): Promise<SandboxConnectionPublic> {
     const s = this.settings(account);
     if (input.enabled !== undefined) {
       s.disabled = s.disabled.filter((x) => x !== id);
@@ -325,7 +378,7 @@ export class SandboxConnections {
     }
     if (id === SERVER_CONNECTION_ID) {
       if (!this.hasServer()) throw new AppError('not_found', 'This server has no built-in sandbox key.');
-      if (input.key || input.label || input.apiUrl) throw new AppError('validation_error', "The built-in connection uses the server's own key; change it in Render's settings (E2B_API_KEY).");
+      if (input.key || input.label || input.apiUrl || input.discovery) throw new AppError('validation_error', "The built-in connection uses the server's own key; change it in Render's settings (E2B_API_KEY).");
       this.save(account, s);
       return this.list(account).find((c) => c.id === id)!;
     }
@@ -333,16 +386,21 @@ export class SandboxConnections {
     const def = providerDef(n.provider);
     const next: ConnNotes = { ...n };
     if (input.label !== undefined) next.label = input.label.trim().slice(0, 60) || n.label;
-    if (input.apiUrl !== undefined) {
+    if (input.apiUrl !== undefined && !(def.kind === 'local' && !input.apiUrl.trim())) {
       const u = await cleanApiUrl(def, input.apiUrl, this.o.lookup);
       if (u) next.apiUrl = u;
       else delete next.apiUrl;
+    }
+    if (input.discovery !== undefined) {
+      const d = cleanDiscovery(def, input.discovery);
+      if (d) next.discovery = d;
+      else delete next.discovery;
     }
     const newKey = input.key?.trim() ? cleanKey(def.id, input.key) : null;
     const f = vaultFields(next);
     this.st.updateVault(account, row.id, { name: f.name, domain: f.domain, usernameEnc: encrypt(f.username), notesEnc: encrypt(f.notes), ...(newKey ? { passwordEnc: encrypt(newKey) } : {}) });
     // a new key or address has not been checked yet
-    if (newKey || input.apiUrl !== undefined) delete s.health[id];
+    if (newKey || next.apiUrl !== n.apiUrl || next.discovery !== n.discovery) delete s.health[id];
     this.save(account, s);
     return this.list(account).find((c) => c.id === id)!;
   }
@@ -369,14 +427,14 @@ export class SandboxConnections {
     return ok;
   }
 
-  private keyOf(account: string, id: string): { provider: SandboxProviderId; key: string; apiUrl?: string; label: string; stamp: number } | null {
+  private keyOf(account: string, id: string): { provider: SandboxProviderId; key: string; apiUrl?: string; discovery?: string; label: string; stamp: number } | null {
     if (id === SERVER_CONNECTION_ID) {
       const key = this.o.serverKey();
       return key ? { provider: 'e2b', key, label: 'Built-in (server key)', stamp: 0 } : null;
     }
     const f = this.rows(account).find((x) => x.n.id === id);
     if (!f) return null;
-    return { provider: f.n.provider, key: revealLogin(f.row).password, apiUrl: f.n.apiUrl, label: f.n.label, stamp: f.row.updatedAt };
+    return { provider: f.n.provider, key: revealLogin(f.row).password, apiUrl: f.n.apiUrl, discovery: f.n.discovery, label: f.n.label, stamp: f.row.updatedAt };
   }
 
   /** Live check: one cheap authenticated call to the provider. Saves and returns the result. */
@@ -386,17 +444,21 @@ export class SandboxConnections {
     let h: Health;
     try {
       if (!k.key) throw new Error('The vault entry has no key. Paste the key again.');
-      if (k.provider === 'e2b') {
+      if (k.provider === 'local') {
+        const r = await checkLocalSandbox({ url: k.apiUrl ?? '', token: k.key, discovery: k.discovery }, { fetchImpl: this.f, lookup: this.o.lookup });
+        h = { state: 'ok', checkedAt: this.now(), info: r.info.slice(0, 400) };
+      } else if (k.provider === 'e2b') {
         const res = await this.f('https://api.e2b.app/sandboxes', { headers: { 'X-API-Key': k.key }, signal: AbortSignal.timeout(20_000) });
         if (!res.ok) {
           const t = await res.text().catch(() => '');
           throw Object.assign(new Error(`E2B ${res.status}: ${t.slice(0, 160)}`), { status: res.status });
         }
         await res.body?.cancel().catch(() => undefined);
+        h = { state: 'ok', checkedAt: this.now() };
       } else {
         await checkDaytonaKey(k.key, { apiUrl: k.apiUrl, fetchImpl: this.f, lookup: this.o.lookup });
+        h = { state: 'ok', checkedAt: this.now() };
       }
-      h = { state: 'ok', checkedAt: this.now() };
     } catch (e) {
       h = { state: 'failed', checkedAt: this.now(), error: friendlyHealthError(k.provider, e), failedUntil: this.now() + FAIL_COOLDOWN_MS };
     }
@@ -414,7 +476,7 @@ export class SandboxConnections {
     if (ok) {
       // write only when something changes (this runs on every computer start)
       if (prev?.state === 'ok' && prev.checkedAt && this.now() - prev.checkedAt < 10 * 60_000) return;
-      s.health[id] = { state: 'ok', checkedAt: this.now() };
+      s.health[id] = { state: 'ok', checkedAt: this.now(), ...(prev?.info ? { info: prev.info } : {}) };
     } else {
       s.health[id] = { state: 'failed', checkedAt: this.now(), error: (error ?? 'It failed.').slice(0, 240), failedUntil: this.now() + FAIL_COOLDOWN_MS };
     }
@@ -424,12 +486,18 @@ export class SandboxConnections {
   private providerFor(account: string, id: string): SandboxProvider | null {
     const k = this.keyOf(account, id);
     if (!k) return null;
-    const cacheKey = `${account}|${id}|${k.stamp}|${k.apiUrl ?? ''}`;
+    const cacheKey = `${account}|${id}|${k.stamp}|${k.apiUrl ?? ''}|${k.discovery ?? ''}`;
     let p = this.providers.get(cacheKey);
     if (!p) {
       // the key is re-read from the vault on every start, so a replaced key applies at once
       const key = () => this.keyOf(account, id)?.key ?? '';
-      p = this.o.makeProvider ? this.o.makeProvider(k.provider, key, k.apiUrl) : k.provider === 'e2b' ? new E2BProvider(key) : new DaytonaProvider(key, { apiUrl: k.apiUrl, fetchImpl: this.f, lookup: this.o.lookup });
+      p = this.o.makeProvider
+        ? this.o.makeProvider(k.provider, key, k.apiUrl)
+        : k.provider === 'e2b'
+          ? new E2BProvider(key)
+          : k.provider === 'local'
+            ? new LocalSandboxProvider({ url: k.apiUrl ?? '', token: k.key, discovery: k.discovery }, { fetchImpl: this.f, lookup: this.o.lookup })
+            : new DaytonaProvider(key, { apiUrl: k.apiUrl, fetchImpl: this.f, lookup: this.o.lookup });
       this.providers.set(cacheKey, p);
     }
     return p;

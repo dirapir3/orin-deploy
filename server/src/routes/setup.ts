@@ -62,7 +62,7 @@ export function setupRouter(deps: Deps): Router {
     res.json(sandboxState(requesterKey(req)));
   });
 
-  const addSchema = z.object({ provider: z.string().min(1).max(40), label: z.string().max(60).optional(), key: z.string().min(1).max(1000), apiUrl: z.string().max(300).optional() });
+  const addSchema = z.object({ provider: z.string().min(1).max(40), label: z.string().max(60).optional(), key: z.string().min(1).max(4000), apiUrl: z.string().max(300).optional(), discovery: z.string().max(20_000).optional() });
   r.post('/sandboxes', async (req, res, next) => {
     try {
       const account = requesterKey(req);
@@ -76,7 +76,7 @@ export function setupRouter(deps: Deps): Router {
     }
   });
 
-  const patchSchema = z.object({ label: z.string().max(60).optional(), key: z.string().max(1000).optional(), apiUrl: z.string().max(300).optional(), enabled: z.boolean().optional() });
+  const patchSchema = z.object({ label: z.string().max(60).optional(), key: z.string().max(4000).optional(), apiUrl: z.string().max(300).optional(), discovery: z.string().max(20_000).optional(), enabled: z.boolean().optional() });
   r.patch('/sandboxes/:id', async (req, res, next) => {
     try {
       const account = requesterKey(req);
