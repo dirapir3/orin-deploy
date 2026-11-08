@@ -565,3 +565,18 @@ and will not touch ~/orin-deploy while it has uncommitted files from the Capacit
   app/chat/[id].tsx chat export uses agentInfo(chatAgent).name instead of 'Orin'; Composer/VoiceCall comments.
   Web build = ~/.vbg/build/src (live 7f63d1d web) + only these edits; entry diff vs live = only the Aura strings.
 - If you write a prompt or UI text about the character, say Aura; say Orin only for the app/server/brand.
+## 2026-11-08 07:20 +06 — Goals, proactive mode, team handoff (task "integrate modern AI capabilities")
+Modelled on Claude Duet (proactive brief / speaks only when needed), Grok Bot (bots that work together),
+Meta Muse (goals with plans + progress). Our own build, no provider product APIs.
+- server/src/agent/powers.ts (new): goals (setup_settings key 'goals'), proactive settings (key 'proactive'),
+  tools create_goal / update_goal / list_goals / ask_teammate / teammate_result (in tools/index.ts, after gitTools).
+  Goal check-ins and the brief/check-ins are ordinary schedules (visible on Schedules, pausable).
+- server/src/routes/powers.ts (new, mounted after agentExtraRouter): GET/POST /v1/agent/goals, POST /goals/:id,
+  POST /goals/:id/work, DELETE /goals/:id, GET/POST /v1/agent/proactive.
+- runtime.ts finish path: a SCHEDULED run whose answer starts with NOTHING_TO_REPORT posts no inbox item
+  (result "Nothing needed you."); a task with input.teamFrom (a teammate's part) posts no inbox item either.
+- apps.ts BUILT_IN_APPS: + goals, + team. persona.ts: one rule line about goals/team.
+- App: src/app/goals.tsx (new), Goals tile in (tabs)/agent.tsx ToolGrid, drawer row (testID drawer-goals),
+  Stack.Screen "goals", store/drawer.ts goPage type, agentApi goals/proactive calls. Added to BOTH ~/orin/app/src
+  and the private web-build copy (~/.prov/build = ~/.vbg/build + these files).
+- test/powers.test.ts (10 tests) in ~/orin/server/test and on the branch.
