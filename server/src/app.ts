@@ -28,6 +28,7 @@ import { voiceRouter } from './routes/voice.js';
 import { setupRouter } from './routes/setup.js';
 import { ttsStreams } from './ai/ttsStream.js';
 import { agentRouter } from './routes/agent.js';
+import { powersRouter } from './routes/powers.js';
 import { requestBaseUrl } from './routes/agentChat.js';
 import { AgentRuntime } from './agent/runtime.js';
 import { capabilityReport } from './agent/capabilities.js';
@@ -238,6 +239,7 @@ export function createApp(deps: Deps) {
   app.use(['/v1/agent', '/v1/connectors'], guestOk, createRateLimiter(config, 'agent', 4));
   app.use('/v1', agentRouter(deps));
   app.use('/v1', agentExtraRouter(deps));
+  app.use('/v1', powersRouter(deps));
   app.use('/v1', uploadsRouter(deps));
 
   // Android APK download: on hosts without a persistent disk the APK lives elsewhere (e.g. a Hugging Face
