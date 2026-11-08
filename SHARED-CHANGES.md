@@ -501,7 +501,9 @@ and will not touch ~/orin-deploy while it has uncommitted files from the Capacit
   browse, publish_site, deep_research, generate_image, study_*...) do NOT run in the spoken turn: they are stand-ins, the
   turn hands off at once via continueInBackground and the task really runs them (its approvals as usual). Typed chat
   unchanged. Test: server/test/voice-background-work.test.ts (6/6). If you rewrite agentChat.ts keep the voiceLane bits.
-- APP (in ~/orin/app/src only, NOT in a web build or APK yet): NEW lib/callResults.ts (+ tests/callResults.test.ts 4/4);
+- APP (in ~/orin/app/src, and in the web build of this commit; NOT in an APK yet): NEW lib/callResults.ts (+ tests/callResults.test.ts 4/4);
   store/agentHub.ts `finished` list filled in poll(); components/VoiceCall.tsx says a short line when background work
   that finished during the call arrives, at a quiet moment (not over her reply or mid-sentence; held approvals first).
   The next web export / APK from ~/orin/app/src carries it.
+- Web build = private copy ~/.vbg/build = ~/work/vault-web/src (live fdf0b65: build-103 + agents.tsx + vault DrawerPanel)
+  + my 3 app files only. No other task's in-progress app work. Heavy list also has match_design (from 21ca921).
