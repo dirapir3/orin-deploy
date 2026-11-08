@@ -1,5 +1,6 @@
 import { knowHowFor } from './knowledge.js';
 import { getMemorySettings, MEMORY_TOOLS, memoryContext } from './memory.js';
+import { isQuietResult } from './powers.js';
 import { join, resolve } from 'node:path';
 import { offAppsNotice, withoutOffApps } from './apps.js';
 import type { AppConfig } from '../config.js';
@@ -346,8 +347,15 @@ export class AgentRuntime {
         }
         let noteId: string | null = null;
         if (task.input.saveAsNote && text.trim()) noteId = this.store.createNote(task.owner, task.title, text, 'task').id;
-        this.store.finishTask(task.id, 'done', { result: text, noteId });
-        this.store.addInbox(task.owner, task.scheduleId ? 'schedule_done' : 'task_done', task.title, text, task.id);
+        // a scheduled check-in with nothing to report stays in Activity and never reaches the chat;
+        // a teammate's part goes back to the agent that asked for it, not to the user
+        const quiet = !!task.scheduleId && isQuietResult(text);
+        this.store.finishTask(task.id, 'done', { result: quiet ? 'Nothing needed you.' : text, noteId });
+        if (!quiet && !task.input.teamFrom) this.store.addInbox(task.owner, task.scheduleId ? 'schedule_done' : 'task_done', task.title, text, task.id);
+        if (quiet) {
+          this.store.addTaskEvent(task.id, 'done', 'Nothing to report');
+          return;
+        }
       }
       this.store.addTaskEvent(task.id, 'done', 'Finished');
     } catch (e) {
