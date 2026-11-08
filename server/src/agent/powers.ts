@@ -80,7 +80,7 @@ function stepMatch(g: Goal, key: string): GoalStep | undefined {
   return g.steps.find((s) => s.id === key) ?? g.steps.find((s) => s.text.toLowerCase() === k) ?? g.steps.find((s) => s.text.toLowerCase().includes(k));
 }
 
-export function createGoal(store: AgentStore, owner: string, v: { title: string; why?: string; steps?: string[] }): Goal {
+export function createGoal(store: AgentStore, owner: string, v: { title: string; why?: string; steps?: string[]; doneSteps?: string[] }): Goal {
   const now = Date.now();
   const all = listGoals(store, owner);
   if (all.filter((g) => g.status !== 'done').length >= MAX_GOALS) throw new Error(`There are already ${MAX_GOALS} goals. Finish or delete one first.`);
@@ -95,8 +95,30 @@ export function createGoal(store: AgentStore, owner: string, v: { title: string;
     createdAt: now,
     updatedAt: now,
   };
+  for (const k of v.doneSteps ?? []) {
+    const st = stepMatch(g, k);
+    if (st && !st.done) {
+      st.done = true;
+      st.doneAt = now;
+      g.log.push({ at: now, text: `Done: ${st.text}` });
+    }
+  }
   saveGoals(store, owner, [g, ...all]);
   return g;
+}
+
+const words = (t: string) => new Set(t.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length > 2));
+/** An active goal that is almost the same as this title (a retried run must not set the goal twice). */
+export function similarGoal(store: AgentStore, owner: string, title: string): Goal | null {
+  const a = words(title);
+  if (!a.size) return null;
+  for (const g of listGoals(store, owner)) {
+    if (g.status === 'done') continue;
+    const b = words(g.title);
+    const common = [...a].filter((w) => b.has(w)).length;
+    if (common / Math.max(a.size, b.size) >= 0.6) return g;
+  }
+  return null;
 }
 
 export function updateGoal(store: AgentStore, owner: string, key: string, p: GoalPatch): Goal | null {
@@ -287,12 +309,15 @@ export const createGoalTool = defineTool({
     title: z.string().min(2).max(120),
     why: z.string().max(600).optional().describe('What the user wants it for, in their words'),
     steps: z.array(z.string().min(2).max(240)).max(25).optional().describe('The plan: concrete steps in order'),
+    done_steps: z.array(z.string().max(240)).max(25).optional().describe('Steps already done: their numbers ("1") or text'),
     check_ins: z.enum(['off', 'daily', 'weekdays', 'weekly']).optional().describe('Work on it and report at 9:00: default off'),
   }),
   label: (a) => `Setting the goal “${a.title}”…`,
   writes: true,
   handler: async (a, ctx) => {
-    let g = createGoal(ctx.services.store, ctx.owner, a);
+    const twin = similarGoal(ctx.services.store, ctx.owner, a.title);
+    if (twin) return { ok: false, content: `A goal like this already exists, so nothing new was set:\n${goalText(ctx.services.store, ctx.owner, twin)}\nUse update_goal on it instead.`, summary: 'Goal already set' };
+    let g = createGoal(ctx.services.store, ctx.owner, { title: a.title, why: a.why, steps: a.steps, doneSteps: a.done_steps });
     if (a.check_ins && a.check_ins !== 'off') {
       if (!ctx.services.config.agent.worker) return { content: `Goal saved (id ${g.id}), but check-ins need the background worker, which is off on this server.`, summary: 'Goal set' };
       g = setGoalCheckIns(ctx.services.store, ctx.owner, g.id, a.check_ins, ctx.timezone || 'UTC') ?? g;
@@ -403,12 +428,14 @@ export const askTeammateTool = defineTool({
 export const teammateResultTool = defineTool({
   name: 'teammate_result',
   description: 'Get the result of work you handed to a teammate with ask_teammate (waits up to wait_seconds if it is still running).',
-  schema: z.object({ task_id: z.string().min(8).max(80), wait_seconds: z.number().int().min(0).max(540).optional() }),
+  schema: z.object({ task_id: z.string().max(80).optional().describe('The id ask_teammate gave; leave out for the latest one'), wait_seconds: z.number().int().min(0).max(540).optional() }),
   label: () => 'Checking on a teammate…',
   needs: needsWorker,
   timeoutMs: 600_000,
   handler: async (a, ctx) => {
-    const t = ctx.services.store.getTaskById(a.task_id);
+    const t = a.task_id?.trim()
+      ? ctx.services.store.getTaskById(a.task_id.trim())
+      : CHARACTERS.flatMap((c) => ctx.services.store.listTasks(ownerFor(ctx.owner, c.id), { limit: 10 })).filter((x) => x.input.teamFrom === ctx.owner).sort((x, y) => y.createdAt - x.createdAt)[0];
     if (!t || t.input.teamFrom !== ctx.owner) return { ok: false, content: 'No handed-over task with that id.', summary: 'Not found' };
     const done = a.wait_seconds ? await waitForTask(ctx.services.store, t.id, a.wait_seconds * 1000, ctx.signal) : t;
     return { content: teammateResult(done ?? t, nameOf(agentOfOwner(t.owner))), summary: done?.status === 'done' ? 'Result in' : 'Still working' };
