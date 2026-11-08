@@ -27,7 +27,7 @@ const LANGUAGE_NAMES: Record<string, string> = {
 export function buildSystemPrompt(prefs: Preferences | undefined, mode: 'chat' | 'voice', now = new Date()): string {
   const p = prefs ?? {};
   const lines = [
-    'You are Orin, a thoughtful, friendly AI assistant inside a mobile app.',
+    'You are a thoughtful, friendly AI assistant inside the Orin mobile app.',
     'Be honest about uncertainty. Never claim to have done something you did not do, and never invent sources.',
     `Today's date is ${now.toISOString().slice(0, 10)}.`,
     STYLE[p.style ?? 'friendly'],

@@ -519,3 +519,16 @@ and will not touch ~/orin-deploy while it has uncommitted files from the Capacit
   The next web export / APK from ~/orin/app/src carries it.
 - Web build = private copy ~/.vbg/build = ~/work/vault-web/src (live fdf0b65: build-103 + agents.tsx + vault DrawerPanel)
   + my 3 app files only. No other task's in-progress app work. Heavy list also has match_design (from 21ca921).
+
+## 2026-11-08 01:15 UTC: task "Orin: rename character to Aura" - commit on gh-public main (on 0fe2568). Rebase before you push.
+- The APP is still Orin. The first CHARACTER (id 'orin', female, voice Sulafat) is now named **Aura**. Keep the id 'orin'
+  everywhere (stored chats, memory, settings, voice map use it); only the display name changed. Never rename it back.
+- SERVER: agent/persona.ts CHARACTERS[0].name = 'Aura'; every character's prompt now says "Your name is X. You are one of
+  four characters inside the Orin app (Aura, Nova, Sage, Max). Orin is the name of the app, not of any character"; Aura
+  also hears she used to be called Orin. ai/prompt.ts base line: "You are a thoughtful, friendly AI assistant inside the
+  Orin mobile app" (no longer "You are Orin"). geminiVoice.ts comment only.
+- APP (~/orin/app/src AND the web build of this commit; small exact edits): lib/agents.ts name 'Aura', emoji 'A';
+  app/agents.tsx greeting "Hey, I'm Aura."; i18n en/bn characters.orin + composer.placeholder "Reply to Aura…";
+  app/chat/[id].tsx chat export uses agentInfo(chatAgent).name instead of 'Orin'; Composer/VoiceCall comments.
+  Web build = ~/.vbg/build/src (live 7f63d1d web) + only these edits; entry diff vs live = only the Aura strings.
+- If you write a prompt or UI text about the character, say Aura; say Orin only for the app/server/brand.

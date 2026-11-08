@@ -35,7 +35,7 @@ export const GEMINI_VOICES: VoiceInfo[] = [
  * sometimes read out loud).
  */
 export const CHARACTER_VOICES: Record<string, { voice: string; gender: 'female' | 'male' }> = {
-  orin: { voice: 'Sulafat', gender: 'female' },
+  orin: { voice: 'Sulafat', gender: 'female' }, // Aura (id kept as orin)
   nova: { voice: 'Laomedeia', gender: 'female' },
   sage: { voice: 'Algieba', gender: 'male' },
   max: { voice: 'Orus', gender: 'male' },

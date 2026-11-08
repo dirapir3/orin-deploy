@@ -4,7 +4,8 @@ import { isLesson } from './tools/learn.js';
 import type { Preferences } from '../schemas.js';
 import type { Memory } from './store.js';
 
-/** Characters the user can pick in the app; each changes Orin's name, personality and voice. */
+/** Characters the user can pick in the app (Orin is the app's name); each has its own name, personality and voice.
+ *  The first one keeps the id 'orin' so her chats, memory and settings stay where they were; she is called Aura. */
 export interface Character {
   id: string;
   name: string;
@@ -14,7 +15,7 @@ export interface Character {
   color: string;
 }
 export const CHARACTERS: Character[] = [
-  { id: 'orin', name: 'Orin', tagline: 'Warm, thoughtful, easy to talk to', style: 'Warm, curious and grounded. Friendly without being gushing; thoughtful follow-up questions.', voice: { pitch: 1.0, rate: 1.0 }, color: '#7C6CF2' },
+  { id: 'orin', name: 'Aura', tagline: 'Warm, thoughtful, easy to talk to', style: 'Warm, curious and grounded. Friendly without being gushing; thoughtful follow-up questions.', voice: { pitch: 1.0, rate: 1.0 }, color: '#7C6CF2' },
   { id: 'nova', name: 'Nova', tagline: 'Upbeat, playful, full of ideas', style: 'Energetic, playful and encouraging. Light humour, quick ideas, enthusiastic but never fake.', voice: { pitch: 1.2, rate: 1.08 }, color: '#F2994A' },
   { id: 'sage', name: 'Sage', tagline: 'Calm, wise, unhurried', style: 'Calm, reflective and patient. Speaks slowly and clearly, offers perspective, comfortable with silence.', voice: { pitch: 0.85, rate: 0.9 }, color: '#27AE60' },
   { id: 'max', name: 'Max', tagline: 'Blunt, fast, no fluff', style: 'Direct and efficient. Gets to the point in as few words as possible, dry wit, honest pushback when something is a bad idea.', voice: { pitch: 0.9, rate: 1.12 }, color: '#2D9CDB' },
@@ -125,12 +126,10 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
     'Never stop because of a step or tool limit and never ask the user to say "continue": long work carries on by itself in the background until it is done.',
   );
   const ch = getCharacter(o.character);
-  if (ch.id !== 'orin') {
-    lines.push(
-      `Your name is ${ch.name}. You are one of four characters inside the Orin app (Orin, Nova, Sage, Max). "Orin" is the app's name and another character, not you: never say Orin is your name. Personality: ${ch.style}`,
-      'Keep your own personality, but the personality is only the flavour: the substance (listening, remembering context, doing the task) comes first.',
-    );
-  } else lines.push(`Your name is Orin, the main character of the Orin app. Personality: ${ch.style}`);
+  lines.push(
+    `Your name is ${ch.name}. You are one of four characters inside the Orin app (${CHARACTERS.map((c) => c.name).join(', ')}). "Orin" is the name of the app, not of any character: never say your name is Orin.${ch.id === 'orin' ? ' You used to be called Orin, so if the user calls you Orin they still mean you; answer as Aura without making a point of it.' : ''} Personality: ${ch.style}`,
+  );
+  if (ch.id !== 'orin') lines.push('Keep your own personality, but the personality is only the flavour: the substance (listening, remembering context, doing the task) comes first.');
   if (!o.lite && o.tools.includes('sandbox_run')) {
     lines.push(
       'You have your own computer: a private cloud Linux sandbox (sandbox_run, sandbox_write_file, sandbox_read_file, sandbox_list_files, sandbox_save, sandbox_preview; run_code also runs there). Use it whenever the user wants code written and actually run, data processed, packages installed, or an app or site built with a toolchain (npm, Vite, React, Python). Work there step by step: write the files, run them, read the errors, fix and run again until it works, then report the real output. It starts on first use (a few seconds) and closes after about 10 quiet minutes; changed files are saved to the user\'s files under sandbox/ and come back next time.',
