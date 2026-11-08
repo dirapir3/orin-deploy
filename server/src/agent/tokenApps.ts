@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineTool, type AgentServices, type ToolContext, type ToolDef } from './tools/types.js';
+import { DEPLOY_APPS, allDeployAppTools, deployAppTools, type DeployAppId } from './deployApps.js';
 
 /**
  * Apps the user connects with their own access token (no OAuth app needed on this server):
@@ -10,7 +11,7 @@ import { defineTool, type AgentServices, type ToolContext, type ToolDef } from '
  * the user's approval first.
  */
 
-export type TokenAppId = 'github' | 'notion' | 'slack' | 'expo';
+export type TokenAppId = 'github' | 'notion' | 'slack' | 'expo' | DeployAppId;
 
 export interface TokenAppSpec {
   id: TokenAppId;
@@ -391,6 +392,8 @@ export const TOKEN_APPS: TokenAppSpec[] = [
     },
   },
   EXPO_APP,
+  // hosting: Netlify, Vercel and Render (deployApps.ts)
+  ...DEPLOY_APPS,
 ];
 
 export const tokenAppTools: Record<TokenAppId, ToolDef[]> = {
@@ -398,9 +401,11 @@ export const tokenAppTools: Record<TokenAppId, ToolDef[]> = {
   notion: [notionSearchTool, notionReadTool, notionCreatePageTool, notionAppendTool],
   slack: [slackListChannelsTool, slackReadChannelTool, slackSendTool],
   expo: expoTools,
+  ...deployAppTools,
 };
 
-export const allTokenAppTools: ToolDef[] = Object.values(tokenAppTools).flat();
+// each tool once: deploy_project and deploy_list serve both Netlify and Vercel
+export const allTokenAppTools: ToolDef[] = [...tokenAppTools.github, ...tokenAppTools.notion, ...tokenAppTools.slack, ...tokenAppTools.expo, ...allDeployAppTools];
 
 export const tokenApp = (id: string) => TOKEN_APPS.find((a) => a.id === id);
 

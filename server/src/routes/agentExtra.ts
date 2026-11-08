@@ -14,6 +14,8 @@ import { CHARACTERS } from '../agent/persona.js';
 import { saveLogin, toPublic, updateLogin, signToken } from '../agent/vault.js';
 import { deleteWsFile, listFiles, MAX_WORKSPACE_BYTES, usedBytes, wipeWorkspace, workspaceDir, writeWsFile } from '../agent/workspace.js';
 import { listConnectors } from '../agent/connectors.js';
+import { emailCheckTool, mailConfigFor, MAIL_PRESETS, notesOf } from '../agent/tools/mail.js';
+import { revealLogin } from '../agent/vault.js';
 import { requestBaseUrl } from './agentChat.js';
 import { ensureBuiltinSkills } from '../agent/builtinSkills.js';
 
@@ -57,8 +59,17 @@ const FileBody = z.object({ path: z.string().min(1).max(200), content: z.string(
 /** Apps that are listed but have no tools behind them yet: shown as "Not available yet", never as installed. */
 const COMING_SOON = [
   { id: 'spotify', name: 'Spotify', description: 'Play music and manage playlists.' },
-  { id: 'outlook', name: 'Outlook', description: 'Microsoft mail and calendar.' },
+  { id: 'outlook', name: 'Outlook calendar', description: 'Microsoft calendar. Outlook mail already works in Email & sign-in codes.' },
 ];
+
+const hostPort = z.string().trim().regex(/^[a-z0-9.-]+(:\d{2,5})?(\/(ssl|tls|starttls|plain))?$/i, 'like imap.example.com:993').max(200);
+const EmailBody = z.object({
+  address: z.string().trim().toLowerCase().regex(/^[^\s@<>,;]+@[^\s@<>,;]+\.[a-z]{2,}$/i, 'Not an email address').max(200),
+  password: z.string().min(4).max(500),
+  name: z.string().trim().max(80).optional(),
+  imap: hostPort.optional(),
+  smtp: hostPort.optional(),
+});
 
 export function agentExtraRouter(deps: Deps): Router {
   const r = Router();
@@ -360,7 +371,17 @@ export function agentExtraRouter(deps: Deps): Router {
     // needs_setup (the server owner must add keys first) or coming_soon (no tools behind it yet)
     const ready = builtInStatus(agent.tools.status(owner(req), agent.services));
     res.json({
-      builtIn: BUILT_IN_APPS.map((a) => ({ id: a.id, name: a.name, what: a.what, enabled: !off.includes(a.id), ready: ready[a.id]!.ready, tools: ready[a.id]!.tools, needs: ready[a.id]!.needs })),
+      builtIn: BUILT_IN_APPS.map((a) => ({
+        id: a.id,
+        name: a.name,
+        what: a.what,
+        enabled: !off.includes(a.id),
+        ready: ready[a.id]!.ready,
+        tools: ready[a.id]!.tools,
+        needs: ready[a.id]!.needs,
+        // email: the inbox logins Orin can use (address only; passwords never leave the vault)
+        ...(a.id === 'email' ? { accounts: emailLogins(account(req)).map((x) => ({ id: x.id, name: x.name, address: x.address })) } : {}),
+      })),
       apps: [
         ...listConnectors(agent.services, st, owner(req)).map((c) => ({ ...c, status: c.connected ? 'connected' : c.configured ? 'available' : 'needs_setup' })),
         ...COMING_SOON.map((c) => ({ ...c, configured: false, connected: false, account: null, needs: [], tools: [], connect: null, status: 'coming_soon' })),
@@ -377,6 +398,54 @@ export function agentExtraRouter(deps: Deps): Router {
     st.setAppEnabled(owner(req), id, enabled);
     res.json({ ok: true, id, enabled });
   });
+
+  // ---- email for the Email & sign-in codes app: save an address + app password in the vault, then
+  // check it really signs in (on Orin's computer, like every mail action) before saying it works
+  r.post('/agent/email', async (req, res) => {
+    const b = parseBody(EmailBody, req.body);
+    const acc = account(req);
+    const domain = b.address.split('@').pop()!.toLowerCase();
+    const notes = [b.imap ? `imap=${b.imap}` : '', b.smtp ? `smtp=${b.smtp}` : ''].filter(Boolean).join(' ');
+    const name = b.name?.trim() || `Email ${b.address}`;
+    if (!MAIL_PRESETS[domain] && !b.imap) throw new AppError('validation_error', `Orin doesn't know the mail servers for ${domain}. Add the IMAP and SMTP servers (like imap.${domain}:993 and smtp.${domain}:465).`);
+    const existing = st.listVault(acc).find((v) => v.name.toLowerCase() === name.toLowerCase());
+    if (!existing && st.listVault(acc).length >= 100) throw new AppError('validation_error', 'The vault holds up to 100 logins.');
+    const before = existing ? { ...revealLogin(existing), domain: existing.domain, notes: notesOf(existing) } : null;
+    const row = existing ? updateLogin(st, acc, existing.id, { domain, username: b.address, password: b.password, notes }) : saveLogin(st, acc, { name, domain, username: b.address, password: b.password, notes });
+    if (!row) throw new AppError('not_found', 'Could not save the login.');
+    const check = await checkEmail(req, row.name);
+    // a login that does not sign in is not kept: a new one is removed, an old one gets its old values back
+    if (!check.ok && !existing) st.deleteVault(acc, row.id);
+    if (!check.ok && existing && before) updateLogin(st, acc, existing.id, before);
+    res.status(check.ok ? 201 : 200).json({ ok: check.ok, message: check.message, login: check.ok ? toPublic(row) : null });
+  });
+  r.post('/agent/email/:id/test', async (req, res) => {
+    const row = st.listVault(account(req)).find((v) => v.id === idParam(req));
+    if (!row || !mailConfigFor(row)) throw new AppError('not_found', 'Email login not found.');
+    res.json(await checkEmail(req, row.name));
+  });
+
+  async function checkEmail(req: Request, login: string): Promise<{ ok: boolean; message: string }> {
+    const m = agent.services.sandboxes;
+    const needs = m ? m.needs(owner(req)) : 'a sandbox provider';
+    if (needs) return { ok: false, message: `Orin's computer is needed to check email, and it isn't ready: ${needs}.` };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 150_000);
+    try {
+      const ctx = agent.toolContext(owner(req), ctrl.signal, 'chat', requestBaseUrl(req));
+      const r = await emailCheckTool.handler({ login }, ctx);
+      const ok = r.ok !== false;
+      const first = String(r.content).split('\n')[0] ?? '';
+      return { ok, message: ok ? `Signed in. ${first.replace(/<<.*$/, '').trim()}`.slice(0, 300) : String(r.content).slice(0, 500) };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  function emailLogins(acc: string) {
+    return st.listVault(acc).flatMap((v) => (mailConfigFor(v) ? [{ id: v.id, name: v.name, address: revealLogin(v).username }] : []));
+  }
 
   // ---- usage
   r.get('/agent/usage', (req, res) => {

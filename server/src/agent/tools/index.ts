@@ -31,6 +31,7 @@ import { sandboxBrowserTool, sandboxEditFileTool, sandboxJobTool, sandboxLiveVie
 import { codingTools } from './coding.js';
 import { codeAuditTool } from './audit.js';
 import { gitTools } from './git.js';
+import { mailTools } from './mail.js';
 
 export const ALL_TOOLS: ToolDef[] = [
   webSearchTool,
@@ -86,6 +87,7 @@ export const ALL_TOOLS: ToolDef[] = [
   ...codingTools,
   codeAuditTool,
   ...gitTools,
+  ...mailTools,
 ];
 
 export function buildToolRegistry(extra: ToolDef[] = []): ToolRegistry {

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isValidTimezone } from '../cron.js';
-import { toPublic } from '../vault.js';
+import { randomInt } from 'node:crypto';
+import { decrypt, saveLogin, toPublic, updateLogin } from '../vault.js';
 import { deleteWsFile, listFiles, readWsFile, workspaceDir, writeWsFile } from '../workspace.js';
 import { describeDiff, diffPlan, dropPreview, fingerprint, listSites, openSite, planSite, previewPlan, publishPlan, siteBaseUrl, siteSlug, unpublishSite, type SiteDiff } from '../sites.js';
 
@@ -34,7 +35,7 @@ export const askUserTool = defineTool({
 export const askSecretTool = defineTool({
   name: 'ask_secret',
   description:
-    "Ask the user for a password, a login (username + password) or an API key/token through a secure field in the app. What they type goes straight into their Secure Vault under the name you give; you never see it. Then use it by name: browser_submit login for a website, or for an API key in a command or code on your computer pass secrets [{name, env}] to sandbox_run or run_code and read the environment variable. Never ask for passwords or keys in chat text; use this instead.",
+    "Ask the user for a password, a login (username + password) or an API key/token through a secure field in the app. What they type goes straight into their Secure Vault under the name you give; you never see it. Then use it by name: for a website, sandbox_browser type with login (or browser_submit login); for an email account (an app password), the email_* tools with login; for an API key in a command or code on your computer pass secrets [{name, env}] to sandbox_run or run_code and read the environment variable. Never ask for passwords or keys in chat text; use this instead.",
   schema: z.object({
     name: z.string().trim().min(1).max(80).describe('Vault login name to save it under, e.g. "GitHub" or "OpenWeather key"'),
     site: z.string().trim().min(3).max(200).describe('Domain it belongs to, e.g. github.com'),
@@ -57,7 +58,7 @@ export const askSecretTool = defineTool({
     });
     if (r.decision !== 'answer') return { ok: false, content: `The user did not give it (${r.decision}). Do not ask again unless they bring it up.`, summary: 'Not given' };
     return {
-      content: `Saved in the user's Secure Vault as "${a.name}" for ${domain}. You cannot see the value. ${a.what === 'api_key' ? `To use it, pass secrets [{"name":"${a.name}","env":"SOME_API_KEY"}] to sandbox_run or run_code and read $SOME_API_KEY; never print it.` : `To sign in, use browser_submit with login "${a.name}".`}`,
+      content: `Saved in the user's Secure Vault as "${a.name}" for ${domain}. You cannot see the value. ${a.what === 'api_key' ? `To use it, pass secrets [{"name":"${a.name}","env":"SOME_API_KEY"}] to sandbox_run or run_code and read $SOME_API_KEY; never print it.` : `To sign in, use sandbox_browser type with login "${a.name}" (field username, then field password), or browser_submit with login "${a.name}". If it is an email app password, use the email tools with login "${a.name}" (email_check first).`}`,
       summary: `Saved to your vault as ${a.name}`.slice(0, 80),
     };
   },
@@ -85,7 +86,7 @@ export const askUserStepTool = defineTool({
 
 export const vaultListTool = defineTool({
   name: 'vault_list',
-  description: "List the logins saved in the user's Secure Vault (name, site and username only; passwords are never shown). Use a login with browser_submit's login argument.",
+  description: "List the logins saved in the user's Secure Vault (name, site and username only; passwords are never shown). Use a login by name: sandbox_browser type with login, browser_submit login, or the email_* tools' login.",
   schema: z.object({}),
   label: () => 'Checking your saved logins…',
   handler: async (_a, ctx) => {
@@ -94,6 +95,68 @@ export const vaultListTool = defineTool({
     return { content: rows.map((r) => `- ${r.name}: site ${r.domain}, username ${r.username || '(none)'}${r.hasPassword ? ', password saved' : ''}`).join('\n'), summary: `${rows.length} saved login${rows.length === 1 ? '' : 's'}` };
   },
 });
+
+const PW_LOWER = 'abcdefghijkmnopqrstuvwxyz';
+const PW_UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const PW_DIGIT = '23456789';
+const PW_SYMBOL = '-_!@#%';
+/** A strong random password (no look-alike characters), with every kind of character a site may require. */
+export function generatePassword(length = 20, symbols = true): string {
+  const pick = (set: string) => set[randomInt(set.length)]!;
+  const all = PW_LOWER + PW_UPPER + PW_DIGIT + (symbols ? PW_SYMBOL : '');
+  const chars = [pick(PW_LOWER), pick(PW_UPPER), pick(PW_DIGIT), ...(symbols ? [pick(PW_SYMBOL)] : [])];
+  while (chars.length < length) chars.push(pick(all));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j]!, chars[i]!];
+  }
+  return chars.join('');
+}
+
+/** Sign-up: a new login with a generated password goes into the vault BEFORE the form is sent; the model never sees it. */
+export const vaultNewLoginTool = defineTool({
+  name: 'vault_new_login',
+  description:
+    "Before creating an account for the user on a website: save a new Secure Vault login with the username/email they want and a new strong password made for them (you never see it). Then fill the sign-up form in sandbox_browser and type the password with login (this name) + field password, also into a \"confirm password\" box; the sign-up button is held for the user's approval. Only for an account the user asked for, with their email/username; never invent an identity. If the site rejects the password (rules about symbols or length), call again with replace true and symbols false or another length.",
+  schema: z.object({
+    name: z.string().trim().min(1).max(80).describe('Vault name, e.g. "Render" or "Netlify (work)"'),
+    site: z.string().trim().min(3).max(200).describe('Domain of the site, e.g. render.com (typing is only allowed on this domain and its subdomains)'),
+    username: z.string().trim().min(1).max(200).describe('The email or username the user wants for this account'),
+    length: z.number().int().min(12).max(64).optional().describe('Password length, default 20'),
+    symbols: z.boolean().optional().describe('false if the site does not allow symbols'),
+    replace: z.boolean().optional().describe('true to make a new password for an entry this tool made earlier, e.g. after the site rejected it'),
+  }),
+  label: () => 'Saving a new login to your vault…',
+  writes: true,
+  handler: async (a, ctx) => {
+    const owner = ctx.owner.split('#')[0]!;
+    const domain = a.site.replace(/^https?:\/\//i, '').split('/')[0]!.toLowerCase().replace(/^www\./, '');
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) return { ok: false, content: `"${a.site}" is not a site domain (like example.com).`, summary: 'Bad site' };
+    const existing = ctx.services.store.findVault(owner, a.name);
+    const password = generatePassword(a.length ?? 20, a.symbols !== false);
+    if (existing) {
+      let notes = '';
+      try {
+        notes = existing.notesEnc ? decrypt(existing.notesEnc) : '';
+      } catch {}
+      const mine = notes.startsWith(NEW_LOGIN_NOTE);
+      if (!a.replace || !mine)
+        return {
+          ok: false,
+          content: `A Secure Vault entry named "${a.name}" already exists${mine ? '' : ' (the user saved it; never replace it)'}. ${mine ? 'Pass replace true to make a new password for it, or ' : ''}use another name.`,
+          summary: 'Name taken',
+        };
+      updateLogin(ctx.services.store, owner, existing.id, { domain, username: a.username, password });
+    } else {
+      saveLogin(ctx.services.store, owner, { name: a.name, domain, username: a.username, password, notes: `${NEW_LOGIN_NOTE} ${new Date().toISOString().slice(0, 10)}` });
+    }
+    return {
+      content: `Saved "${a.name}" in the Secure Vault for ${domain}: username ${a.username}, with a new ${a.length ?? 20}-character password (hidden from you). The account does not exist until the sign-up form is sent. Next: open the sign-up page in sandbox_browser, type the username, type the password with login "${a.name}" field password (and into any confirm box), then press the sign-up button with confirm true so the user approves it. If the site emails a code, find it with email_search.`,
+      summary: `New login saved: ${a.name}`.slice(0, 80),
+    };
+  },
+});
+const NEW_LOGIN_NOTE = 'Made by Orin for a new account on';
 
 export const deleteNoteTool = defineTool({
   name: 'delete_note',
@@ -414,4 +477,4 @@ export const previewSiteTool = defineTool({
   },
 });
 
-export const extraTools = [askUserTool, askSecretTool, askUserStepTool, vaultListTool, deleteNoteTool, listSchedulesTool, updateScheduleTool, writeFileTool, readFileTool, listFilesTool, deleteFileTool, publishSiteTool, checkSiteTool, unpublishSiteTool, listSitesTool, openSiteTool, previewSiteTool];
+export const extraTools = [askUserTool, askSecretTool, askUserStepTool, vaultListTool, vaultNewLoginTool, deleteNoteTool, listSchedulesTool, updateScheduleTool, writeFileTool, readFileTool, listFilesTool, deleteFileTool, publishSiteTool, checkSiteTool, unpublishSiteTool, listSitesTool, openSiteTool, previewSiteTool];

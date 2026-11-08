@@ -20,6 +20,10 @@ export const BUILT_IN_APPS: BuiltInApp[] = [
   { id: 'sites', name: 'Websites & hosting', what: 'Builds, previews and publishes sites and web apps', tools: ['publish_site', 'check_site', 'unpublish_site', 'list_sites', 'open_site', 'preview_site', 'design_kit', 'study_reference', 'compare_to_reference', 'design_spec', 'match_design'] },
   { id: 'images', name: 'Images', what: 'Makes pictures', tools: ['generate_image'] },
   { id: 'notes', name: 'Notes', what: 'Writes and keeps notes for you', tools: ['create_note', 'update_note', 'list_notes', 'read_note', 'delete_note'] },
+  { id: 'coding', name: 'Coding & projects', what: 'Writes whole projects, maps code, runs builds and tests, starts from templates', tools: ['sandbox_write_files', 'code_map', 'run_checks', 'scaffold_project', 'trial_project'] },
+  { id: 'git', name: 'Git & GitHub', what: 'Clones, commits and pushes code and opens pull requests (pushing asks you first)', tools: ['git_*', 'github_create_pr'] },
+  { id: 'email', name: 'Email & sign-in codes', what: 'Reads your inbox, finds sign-up and 2-step codes, drafts and sends (sending asks you first)', tools: ['email_*'] },
+  { id: 'learning', name: 'Learning & tool servers', what: 'Learns how-tos from links and repos and connects new MCP tool servers', tools: ['remember_know_how', 'recall_know_how', 'forget_know_how', 'study_source', 'connect_tool_server', 'use_tool_server', 'tool_servers'] },
   { id: 'schedules', name: 'Schedules & reminders', what: 'Reminders and tasks on a timetable', tools: ['create_reminder', 'list_reminders', 'cancel_reminder', 'create_schedule', 'delete_schedule', 'list_schedules', 'update_schedule'] },
   { id: 'vault', name: 'Secure Vault', what: 'Encrypted logins it uses for you', tools: ['vault_list'] },
 ];

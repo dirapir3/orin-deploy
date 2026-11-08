@@ -23,6 +23,8 @@ PROFILE = os.path.join(STATE, 'browser-profile')
 LIVE_FILE = os.path.join(STATE, 'live.json')
 # E2B's proxy can reach even 127.0.0.1 ports from outside, so the daemon only obeys callers that hold this token.
 TOKEN_FILE = os.path.join(STATE, 'browser.token')
+# sign-ins saved on the server from an earlier computer; read once at start, then deleted
+SIGNINS_IN = os.path.join(STATE, 'signins-in.json')
 
 
 def _token():
@@ -121,6 +123,57 @@ SNAP_JS = r"""
 """
 
 
+CHALLENGE_JS = r"""
+() => {
+  const frames = [...document.querySelectorAll('iframe')].map(f => (f.src || '') + ' ' + (f.title || '')).join(' ').toLowerCase();
+  if (/recaptcha|hcaptcha|challenges\.cloudflare|turnstile|arkoselabs|funcaptcha|captcha/.test(frames)) return 'captcha';
+  if (document.querySelector('.g-recaptcha,.h-captcha,.cf-turnstile,[data-sitekey]')) return 'captcha';
+  const t = ((document.title || '') + ' ' + (document.body ? document.body.innerText.slice(0, 4000) : '')).toLowerCase();
+  if (/verify (that )?you('| a)re (a )?human|i'm not a robot|are you a robot|checking (if the site connection is secure|your browser)|press (and|&) hold/.test(t)) return 'captcha';
+  if (document.querySelector('input[autocomplete="one-time-code"]')) return 'code';
+  const field = document.querySelector('input:not([type=hidden]):not([type=password]):not([type=checkbox]):not([type=radio]):not([type=submit])');
+  if (field && /(verification|security|confirmation|one-time|login|sign-in|6-digit) code|2-step verification|two-factor|two-step|authenticator app|enter the code|we (sent|emailed|texted) (you )?a code/.test(t)) return 'code';
+  return null;
+}
+"""
+
+
+def _rev(cookies):
+    import hashlib
+    h = hashlib.sha256()
+    for c in sorted(cookies, key=lambda c: (c.get('domain', ''), c.get('name', ''), c.get('path', ''))):
+        h.update(f"{c.get('domain')}|{c.get('name')}|{c.get('path')}|{c.get('value')}|{int(c.get('expires') or 0)}\n".encode())
+    return h.hexdigest()[:16]
+
+
+def _restore_signins(ctx):
+    """Cookies the server kept from an earlier computer: added once, file deleted at once."""
+    if not os.path.exists(SIGNINS_IN):
+        return 0
+    try:
+        with open(SIGNINS_IN) as f:
+            cookies = json.load(f)
+    except Exception:
+        cookies = []
+    try:
+        os.remove(SIGNINS_IN)
+    except Exception:
+        pass
+    now = time.time()
+    ok = 0
+    for c in cookies if isinstance(cookies, list) else []:
+        try:
+            exp = c.get('expires', -1)
+            if exp not in (None, -1) and exp < now:
+                continue
+            c = {k: v for k, v in c.items() if k in ('name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite')}
+            ctx.add_cookies([c])
+            ok += 1
+        except Exception:
+            pass
+    return ok
+
+
 def serve():
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from playwright.sync_api import sync_playwright
@@ -132,7 +185,7 @@ def serve():
         PROFILE, headless=False, no_viewport=True, accept_downloads=True,
         args=['--no-sandbox', '--start-maximized', '--window-position=0,0', '--window-size=1280,800', '--disable-dev-shm-usage', '--no-first-run'],
     )
-    state = {'page': ctx.pages[0] if ctx.pages else ctx.new_page(), 'last': time.time()}
+    state = {'page': ctx.pages[0] if ctx.pages else ctx.new_page(), 'last': time.time(), 'restored': _restore_signins(ctx)}
     ctx.on('page', lambda p: state.update(page=p))
 
     def page():
@@ -166,6 +219,12 @@ def serve():
             out['more'] = f'{len(text) - offset - limit} more characters: read with offset {offset + limit}'
         if note:
             out['note'] = note
+        try:
+            ch = p.evaluate(CHALLENGE_JS)
+            if ch:
+                out['challenge'] = ch
+        except Exception:
+            pass
         return out
 
     def locate(p, a):
@@ -201,6 +260,8 @@ def serve():
         return bool(info.get('submit')) and info.get('method') == 'post'
 
     def act(a):
+        if os.path.exists(SIGNINS_IN):
+            state['restored'] = state.get('restored', 0) + _restore_signins(ctx)
         p = page()
         kind = a.get('action')
         if kind == 'open':
@@ -230,7 +291,8 @@ def serve():
                 dom = (a.get('domain') or '').lower().removeprefix('*.').removeprefix('www.')
                 if dom and not (host == dom or host.endswith('.' + dom)):
                     return {'ok': False, 'error': f'That login is saved for {dom}, but this page is {host}. For safety it was not typed here.'}
-                text = os.environ.get(a['text_env'], '')
+                # the client passes the value along: the daemon was started by an earlier call, without this env
+                text = a.get('secret_value') or os.environ.get(a['text_env'], '')
                 if not text:
                     return {'ok': False, 'error': 'The secret value was empty.'}
             if a.get('clear', True):
@@ -284,6 +346,17 @@ def serve():
             state['page'] = ctx.pages[i]
             ctx.pages[i].bring_to_front()
             return snapshot(ctx.pages[i])
+        if kind == 'export_signins':
+            # for the server only: it keeps these encrypted and never shows them to the model
+            cookies = ctx.cookies()
+            return {'ok': True, 'cookies': cookies, 'signins_rev': _rev(cookies)}
+        if kind == 'forget_signins':
+            ctx.clear_cookies()
+            try:
+                p.evaluate('() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} }')
+            except Exception:
+                pass
+            return {'ok': True, 'note': 'Signed out of every site in this browser.'}
         return {'ok': False, 'error': f'Unknown action {kind}'}
 
     class H(BaseHTTPRequestHandler):
@@ -306,6 +379,13 @@ def serve():
                     res = {'ok': True, 'stopped': True}
                 else:
                     res = act(a)
+                    if isinstance(res, dict) and 'signins_rev' not in res:
+                        try:
+                            res['signins_rev'] = _rev(ctx.cookies())
+                        except Exception:
+                            pass
+                    if state.get('restored'):
+                        res['restored'] = state.pop('restored')
             except Exception as e:
                 res = {'ok': False, 'error': str(e)[:400]}
             data = json.dumps(res).encode()
@@ -327,6 +407,8 @@ def serve():
 
 def client():
     a = json.loads(os.environ.get('ORIN_ACT') or '{}')
+    if a.get('text_env'):
+        a['secret_value'] = os.environ.get(a['text_env'], '')
     if a.get('action') == 'live':
         pw = ensure_display()
         print(json.dumps({'ok': True, 'password': pw, 'port': 6080, 'browser': _up(PORT)}))
@@ -334,6 +416,19 @@ def client():
     if not _up(PORT):
         if a.get('action') == 'stop':
             print(json.dumps({'ok': True, 'stopped': True}))
+            return
+        if a.get('action') == 'export_signins':
+            print(json.dumps({'ok': False, 'error': 'The browser is not running.'}))
+            return
+        if a.get('action') == 'forget_signins':
+            import shutil
+            shutil.rmtree(PROFILE, ignore_errors=True)
+            for f in (SIGNINS_IN,):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+            print(json.dumps({'ok': True, 'note': 'Signed out of every site in this browser.'}))
             return
         ensure_display()
         _spawn(f'{sys.executable} {os.path.abspath(__file__)} --serve', 'browser.log')
