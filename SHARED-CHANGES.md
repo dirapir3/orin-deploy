@@ -490,3 +490,18 @@ and will not touch ~/orin-deploy while it has uncommitted files from the Capacit
   now says bigger apps are fine (work continues in the background). App: lib/agents.ts (gender), services/speech/tts.ts
   (deviceVoiceFor), serverSpeaker.ts, VoiceCall.tsx, store/chat.ts, app/agents.tsx, lib/sentences.ts (stripActingNotes).
   Android 1.0.10 (versionCode 11) published to the downloads branch. Server tests: 240 pass.
+
+## 2026-11-08 00:50 UTC: task 00a05c97 "Orin: heavy background work during voice calls"
+- !! VM crashed ~00:38 UTC (load 30) and some files written just before it came back as all NUL bytes. Found zeroed:
+  app/src/app/agents.tsx (52673 bytes of NUL, last written 00:36 by another task). Its owner must restore it; the app
+  does not compile until then. Check your own recent writes: `head -c 64 FILE | tr -cd '\0' | wc -c`.
+- SERVER (also on gh-public main, branch voice-bg): NEW server/src/agent/voiceWork.ts; routes/agentChat.ts voice-only hunks
+  (voiceLane, voiceTools wrapper, cancel_task, isFiller for passAlong, voice handoff note); agent/loop.ts `shouldHandoff`
+  option (one line after onCheckpoint). On a call heavy tools (sandbox_*, run_code, run_checks, scaffold_project, git_*,
+  browse, publish_site, deep_research, generate_image, study_*...) do NOT run in the spoken turn: they are stand-ins, the
+  turn hands off at once via continueInBackground and the task really runs them (its approvals as usual). Typed chat
+  unchanged. Test: server/test/voice-background-work.test.ts (6/6). If you rewrite agentChat.ts keep the voiceLane bits.
+- APP (in ~/orin/app/src only, NOT in a web build or APK yet): NEW lib/callResults.ts (+ tests/callResults.test.ts 4/4);
+  store/agentHub.ts `finished` list filled in poll(); components/VoiceCall.tsx says a short line when background work
+  that finished during the call arrives, at a quiet moment (not over her reply or mid-sentence; held approvals first).
+  The next web export / APK from ~/orin/app/src carries it.

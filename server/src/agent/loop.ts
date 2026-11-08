@@ -37,6 +37,11 @@ export interface RunAgentOptions {
    * Without it the last step answers without tools, honestly saying what is and isn't done.
    */
   handoff?: (messages: ProviderMessage[]) => Promise<string | null>;
+  /**
+   * Checked after every tool round: true hands the rest of the work on (through `handoff`) right away,
+   * without spending the remaining steps (voice calls: heavy work goes to the background, voiceWork.ts).
+   */
+  shouldHandoff?: () => boolean;
   /** Called after every round of tool results with the transcript so far (background tasks save it, so a restart resumes from here). */
   onCheckpoint?: (messages: ProviderMessage[], steps: number) => void;
   /**
@@ -432,6 +437,7 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
     } catch {
       /* a failed checkpoint never stops the work */
     }
+    if (o.handoff && !o.signal.aborted && o.shouldHandoff?.()) break;
   }
 
   if (finishReason === 'tool_calls' && o.handoff && !o.signal.aborted) {

@@ -16,7 +16,8 @@ import { offAppsNotice, withoutOffApps } from '../agent/apps.js';
 import { resolveUploadDocuments } from '../agent/uploads.js';
 import { resolveDesignImages } from '../agent/designFiles.js';
 import { amendments, runKey } from '../agent/amendments.js';
-import { alongsideContext, passAlong, saidText } from '../agent/alongside.js';
+import { alongsideContext, passAlong, saidText, type Alongside } from '../agent/alongside.js';
+import { cancelTaskTool, isFiller, shouldHandOff, VOICE_HANDOFF_AGAIN_NOTE, VOICE_HANDOFF_NOTE, VOICE_WORK_LINES, voiceTools, type VoiceWorkState } from '../agent/voiceWork.js';
 
 /** A chat reply keeps working on the server when the app goes away, but not forever. */
 const DETACHED_RUN_MS = 50 * 60_000;
@@ -75,8 +76,15 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   run.topic = [...body.messages].reverse().find((m) => m.role === 'user')?.content.slice(0, 160) ?? '';
   // The chat never locks: a message sent while earlier work in this chat still runs also goes to that work.
   let along: string | undefined;
+  // a call: heavy work runs in the background so the voice lane stays quick (agent/voiceWork.ts)
+  const voiceLane = body.mode === 'voice' && !incognito;
+  const voiceWork: VoiceWorkState = { deferred: [], started: Date.now() };
+  let passed: Alongside | undefined;
   try {
-    along = alongsideContext(passAlong({ runs: chatRuns, store: agent.store, owner, account, run, conversationId, incognito, alongside: body.alongside, said: saidText(body.messages) }));
+    const said = saidText(body.messages);
+    // "yeah", "okay" on a call are conversation, not notes for the running work
+    passed = passAlong({ runs: chatRuns, store: agent.store, owner, account, run, conversationId, incognito, alongside: body.alongside, said: voiceLane && isFiller(said) ? '' : said });
+    along = alongsideContext(passed);
   } catch (err) {
     logger.warn('could not pass a message to running work', { err: String(err) });
   }
@@ -90,9 +98,13 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     }
   }
   if (along) work = work ? `${work}\n\n${along}` : along;
+  if (voiceLane) work = work ? `${work}\n\n${VOICE_WORK_LINES}` : VOICE_WORK_LINES;
   // apps the user turned off for this character on the Apps page are not offered (chat and calls)
   const appsOff = agent.store.appsOff(owner);
-  const tools = withoutOffApps(agent.tools.available(owner, agent.services, { incognito }), appsOff);
+  const offered = withoutOffApps(agent.tools.available(owner, agent.services, { incognito }), appsOff);
+  const tools = voiceLane
+    ? [...voiceTools(offered, voiceWork, { passedTo: passed?.passedTo }), cancelTaskTool({ getTask: (o, id) => agent.store.getTask(o, id), cancelTask: (o, id) => agent.cancelTask(o, id) })]
+    : offered;
   // quick lane (agent/quickLane.ts): plain conversation gets a short prompt and a few tools; more_tools opens the rest
   const lite = wantsQuickLane(body, config.agent.quickLane);
   const runTools = lite ? quickTools(tools) : tools;
@@ -166,6 +178,8 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       onCheckpoint: incognito ? undefined : (msgs, steps) => chatRuns.journal?.checkpoint(run, msgs, steps),
       // what the user writes in this chat while this reply works (agent/amendments.ts)
       takeNotes: () => amendments.take(runKey(run.id)),
+      // a call: a heavy tool or a long turn hands the rest to the background at once
+      shouldHandoff: voiceLane ? () => shouldHandOff(voiceWork) : undefined,
       // out of steps with work still going: carry on as a background task instead of stopping
       handoff: incognito
         ? undefined
@@ -173,7 +187,9 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
             const lastUser = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
             const title = lastUser.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Carrying on';
             run.handedOff = true; // Activity lists the background task from here on, not this reply
-            return agent.continueInBackground(owner, { title, prompt: lastUser, messages: msgs, conversationId, timezone, from: runKey(run.id) });
+            const note = agent.continueInBackground(owner, { title, prompt: lastUser, messages: msgs, conversationId, timezone, from: runKey(run.id) });
+            // said on the call: short, and no "posted here"
+            return note && body.mode === 'voice' ? (note.startsWith('Still') ? VOICE_HANDOFF_AGAIN_NOTE : VOICE_HANDOFF_NOTE) : note;
           },
       onEvent: (ev) => {
         if (controller.signal.aborted) return;
