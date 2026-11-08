@@ -122,7 +122,9 @@ export function agentRouter(deps: Deps): Router {
     res.json({ memory: m });
   });
   r.get('/agent/memory/settings', (req, res) => res.json({ settings: getMemorySettings(st, owner(req)) }));
-  r.put('/agent/memory/settings', (req, res) => res.json({ settings: setMemorySettings(st, owner(req), parseBody(MemorySettingsBody, req.body)) }));
+  const saveMemorySettings = (req: Request, res: Response) => res.json({ settings: setMemorySettings(st, owner(req), parseBody(MemorySettingsBody, req.body)) });
+  r.put('/agent/memory/settings', saveMemorySettings);
+  r.patch('/agent/memory/settings', saveMemorySettings);
   r.get('/agent/memory/conversations', (req, res) => res.json({ episodes: st.listEpisodes(owner(req), 200) }));
   r.delete('/agent/memory/conversations/:id', (req, res) => {
     if (!st.deleteEpisode(owner(req), idParam(req))) throw new AppError('not_found', 'Conversation not found.');
