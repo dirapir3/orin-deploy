@@ -52,6 +52,8 @@ export const ChatRequestSchema = z
     incognito: z.boolean().optional(),
     /** which character/persona answers (orin, nova, sage, max) */
     character: z.string().trim().max(30).optional(),
+    /** the project this chat belongs to (Projects in the app): memories about it come along (agent/memory.ts) */
+    project: z.object({ id: z.string().trim().max(80).optional(), name: z.string().trim().min(1).max(80) }).optional(),
     /** set false to get a plain reply without tools */
     agent: z.boolean().optional(),
     /**

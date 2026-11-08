@@ -13,13 +13,28 @@ import { listConnectors, googleAuthUrl, googleConfigured } from '../agent/connec
 import { connectTokenApp, tokenApp, type TokenAppId } from '../agent/tokenApps.js';
 import { requestBaseUrl } from './agentChat.js';
 import { ensureBuiltinSkills } from '../agent/builtinSkills.js';
+import { getMemorySettings, searchMemory, setMemorySettings } from '../agent/memory.js';
+import { MemorySecretError } from '../agent/memorySafety.js';
+import { isLesson } from '../agent/tools/learn.js';
 
 const owner = (req: Request) => agentOwnerKey(req);
 const idParam = (req: Request) => String(req.params.id ?? '');
 
 const NoteBody = z.object({ title: z.string().trim().min(1).max(200), body: z.string().max(200_000).default('') });
 const NotePatch = z.object({ title: z.string().trim().min(1).max(200).optional(), body: z.string().max(200_000).optional() });
-const MemoryBody = z.object({ text: z.string().trim().min(2).max(500) });
+const MEMORY_KIND = z.enum(['profile', 'preference', 'project', 'person', 'fact']);
+const MemoryBody = z.object({ text: z.string().trim().min(2).max(500), kind: MEMORY_KIND.optional(), project: z.string().trim().max(80).optional() });
+const MemoryPatch = z.object({ text: z.string().trim().min(2).max(500).optional(), kind: MEMORY_KIND.optional(), project: z.string().trim().max(80).optional() });
+const MemorySettingsBody = z.object({ enabled: z.boolean().optional(), learn: z.boolean().optional() });
+/** A password, key or code in a memory: refused with the reason (it belongs in the Secure Vault). */
+function memoryWrite<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof MemorySecretError) throw new AppError('validation_error', err.message);
+    throw err;
+  }
+}
 const TaskBody = z.object({
   kind: z.enum(['agent', 'deep_research']).default('agent'),
   title: z.string().trim().min(2).max(120).optional(),
@@ -89,11 +104,33 @@ export function agentRouter(deps: Deps): Router {
   });
 
   // ---- memory
-  r.get('/agent/memories', (req, res) => res.json({ memories: st.listMemories(owner(req)) }));
+  // Memory page (agent/memory.ts): facts, earlier conversations and the on/off settings, per character
+  r.get('/agent/memories', (req, res) => {
+    const o = owner(req);
+    const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 200) : '';
+    const memories = (q ? searchMemory(st, o, q, 100) : st.listMemories(o)).filter((m) => !isLesson(m.tags));
+    res.json({ memories, settings: getMemorySettings(st, o), episodes: st.listEpisodes(o, 50) });
+  });
   r.post('/agent/memories', (req, res) => {
     const b = parseBody(MemoryBody, req.body);
-    res.status(201).json({ memory: st.addMemory(owner(req), b.text) });
+    res.status(201).json({ memory: memoryWrite(() => st.addMemory(owner(req), b.text, '', { kind: b.kind, source: 'user', project: b.project })) });
   });
+  r.patch('/agent/memories/:id', (req, res) => {
+    const b = parseBody(MemoryPatch, req.body);
+    const m = memoryWrite(() => st.updateMemory(owner(req), idParam(req), { ...b, source: 'user' }));
+    if (!m) throw new AppError('not_found', 'Memory not found.');
+    res.json({ memory: m });
+  });
+  r.get('/agent/memory/settings', (req, res) => res.json({ settings: getMemorySettings(st, owner(req)) }));
+  r.put('/agent/memory/settings', (req, res) => res.json({ settings: setMemorySettings(st, owner(req), parseBody(MemorySettingsBody, req.body)) }));
+  r.get('/agent/memory/conversations', (req, res) => res.json({ episodes: st.listEpisodes(owner(req), 200) }));
+  r.delete('/agent/memory/conversations/:id', (req, res) => {
+    if (!st.deleteEpisode(owner(req), idParam(req))) throw new AppError('not_found', 'Conversation not found.');
+    res.json({ ok: true });
+  });
+  r.delete('/agent/memory/conversations', (req, res) => res.json({ deleted: st.clearEpisodes(owner(req)) }));
+  /** The app deleted a chat: forget its summary too (by the app's conversation id). */
+  r.delete('/agent/memory/chat/:id', (req, res) => res.json({ deleted: st.forgetConversation(owner(req), idParam(req)) }));
   r.delete('/agent/memories/:id', (req, res) => {
     if (!st.deleteMemory(owner(req), idParam(req))) throw new AppError('not_found', 'Memory not found.');
     res.json({ ok: true });

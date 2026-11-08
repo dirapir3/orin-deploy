@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { ensureKnowledgeTables, listKnowHow } from './knowledge.js';
 import { randomUUID } from 'node:crypto';
 import { encrypt as sealToken, decrypt as openToken } from './vault.js';
+import { MemorySecretError, redactSecrets, secretProblem } from './memorySafety.js';
 
 /**
  * Server-side agent state in one SQLite file (Node's built-in node:sqlite, no native build step):
@@ -16,6 +17,28 @@ export interface Memory {
   owner: string;
   text: string;
   tags: string;
+  createdAt: number;
+  updatedAt: number;
+  /** profile | preference | project | person | fact (agent/memory.ts) */
+  kind?: string;
+  /** 'user' (added in the app or asked to remember) or 'auto' (learned from a chat) */
+  source?: string;
+  /** the project this memory belongs to ('' = about the user in general) */
+  project?: string;
+  /** the chat it was learned in, if any */
+  conversationId?: string;
+}
+
+/** A remembered past conversation: what it was about, so a new chat can pick up from it (agent/memory.ts). */
+export interface MemoryEpisode {
+  id: string;
+  owner: string;
+  conversationId: string;
+  title: string;
+  summary: string;
+  project: string;
+  mode: string;
+  turns: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -195,7 +218,40 @@ function parseJson<T>(v: unknown, fallback: T): T {
   }
 }
 
-const toMemory = (r: Row): Memory => ({ id: s(r.id), owner: s(r.owner), text: s(r.text), tags: s(r.tags), createdAt: n(r.created_at), updatedAt: n(r.updated_at) });
+const toMemory = (r: Row): Memory => ({
+  id: s(r.id),
+  owner: s(r.owner),
+  text: s(r.text),
+  tags: s(r.tags),
+  createdAt: n(r.created_at),
+  updatedAt: n(r.updated_at),
+  kind: s(r.kind) || 'fact',
+  source: s(r.source) || 'user',
+  project: s(r.project),
+  conversationId: s(r.conversation_id),
+});
+const toEpisode = (r: Row): MemoryEpisode => ({
+  id: s(r.id),
+  owner: s(r.owner),
+  conversationId: s(r.conversation_id),
+  title: s(r.title),
+  summary: s(r.summary),
+  project: s(r.project),
+  mode: s(r.mode),
+  turns: n(r.turns),
+  createdAt: n(r.created_at),
+  updatedAt: n(r.updated_at),
+});
+/** Words of a memory, for spotting the same fact said a little differently. */
+const factWords = (t: string) => new Set(t.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1));
+function sameFact(a: string, b: string): boolean {
+  const x = factWords(a);
+  const y = factWords(b);
+  if (x.size < 3 || y.size < 3) return false;
+  let both = 0;
+  for (const w of x) if (y.has(w)) both++;
+  return both / (x.size + y.size - both) >= 0.8;
+}
 const toNote = (r: Row): Note => ({ id: s(r.id), owner: s(r.owner), title: s(r.title), body: s(r.body), source: s(r.source), createdAt: n(r.created_at), updatedAt: n(r.updated_at) });
 const toVault = (r: Row): VaultRow => ({ id: s(r.id), owner: s(r.owner), name: s(r.name), domain: s(r.domain), usernameEnc: s(r.username_enc), passwordEnc: s(r.password_enc), notesEnc: s(r.notes_enc), createdAt: n(r.created_at), updatedAt: n(r.updated_at) });
 const toPrompt = (r: Row): PromptRec => {
@@ -269,6 +325,19 @@ export class AgentStore {
     // added after the first release: card details for prompts (headline, full content, page link, secret field)
     const cols = this.all('PRAGMA table_info(prompts)').map((c) => s(c.name));
     if (!cols.includes('meta')) this.db.exec("ALTER TABLE prompts ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'");
+    // added with learned memory (agent/memory.ts): what kind of memory, who added it, which project and chat
+    const memCols = this.all('PRAGMA table_info(memories)').map((c) => s(c.name));
+    for (const [col, def] of [
+      ['kind', "TEXT NOT NULL DEFAULT 'fact'"],
+      ['source', "TEXT NOT NULL DEFAULT 'user'"],
+      ['project', "TEXT NOT NULL DEFAULT ''"],
+      ['conversation_id', "TEXT NOT NULL DEFAULT ''"],
+    ] as const) {
+      if (!memCols.includes(col)) this.db.exec(`ALTER TABLE memories ADD COLUMN ${col} ${def}`);
+    }
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS memory_episodes (id TEXT PRIMARY KEY, owner TEXT NOT NULL, conversation_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'chat', turns INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (owner, conversation_id)); CREATE INDEX IF NOT EXISTS memory_episodes_owner ON memory_episodes(owner, updated_at);",
+    );
   }
 
   private all(sql: string, ...params: (string | number | null)[]): Row[] {
@@ -282,17 +351,87 @@ export class AgentStore {
   }
 
   // ---- memories
-  addMemory(owner: string, text: string, tags = ''): Memory {
+  /** Throws MemorySecretError for passwords, keys, codes and card numbers (they belong in the vault). */
+  addMemory(owner: string, text: string, tags = '', meta: { kind?: string; source?: string; project?: string; conversationId?: string } = {}): Memory {
+    const problem = secretProblem(text);
+    if (problem) throw new MemorySecretError(problem);
     const now = Date.now();
-    // Same fact again: refresh it instead of storing a duplicate.
-    const dup = this.get('SELECT * FROM memories WHERE owner = ? AND lower(text) = lower(?)', owner, text);
+    const kind = meta.kind || 'fact';
+    const source = meta.source || 'user';
+    const project = meta.project ?? '';
+    const conversationId = meta.conversationId ?? '';
+    // Same fact again (or nearly the same words): refresh it instead of storing a duplicate.
+    const dup =
+      this.get('SELECT * FROM memories WHERE owner = ? AND lower(text) = lower(?)', owner, text) ??
+      this.all('SELECT * FROM memories WHERE owner = ? ORDER BY updated_at DESC LIMIT 500', owner).find((r) => sameFact(s(r.text), text));
     if (dup) {
-      this.run('UPDATE memories SET updated_at = ? WHERE id = ?', now, s(dup.id));
-      return { ...toMemory(dup), updatedAt: now };
+      // a person's own words win over a learned one; the newer wording replaces the older
+      const keepSource = s(dup.source) === 'user' ? 'user' : source;
+      this.run('UPDATE memories SET text = ?, updated_at = ?, source = ?, kind = ?, project = ? WHERE id = ?', text, now, keepSource, meta.kind ? kind : s(dup.kind) || kind, project || s(dup.project), s(dup.id));
+      return toMemory(this.get('SELECT * FROM memories WHERE id = ?', s(dup.id))!);
     }
-    const m: Memory = { id: randomUUID(), owner, text, tags, createdAt: now, updatedAt: now };
-    this.run('INSERT INTO memories (id, owner, text, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', m.id, owner, text, tags, now, now);
+    const m: Memory = { id: randomUUID(), owner, text, tags, createdAt: now, updatedAt: now, kind, source, project, conversationId };
+    this.run(
+      'INSERT INTO memories (id, owner, text, tags, created_at, updated_at, kind, source, project, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      m.id, owner, text, tags, now, now, kind, source, project, conversationId,
+    );
     return m;
+  }
+  getMemory(owner: string, id: string): Memory | null {
+    const r = this.get('SELECT * FROM memories WHERE owner = ? AND id = ?', owner, id);
+    return r ? toMemory(r) : null;
+  }
+  /** Corrects a memory in place (the user edited it, or a newer fact replaced it). Throws MemorySecretError. */
+  updateMemory(owner: string, id: string, patch: { text?: string; kind?: string; project?: string; source?: string }): Memory | null {
+    const cur = this.getMemory(owner, id);
+    if (!cur) return null;
+    if (patch.text !== undefined) {
+      const problem = secretProblem(patch.text);
+      if (problem) throw new MemorySecretError(problem);
+    }
+    this.run(
+      'UPDATE memories SET text = ?, kind = ?, project = ?, source = ?, updated_at = ? WHERE owner = ? AND id = ?',
+      patch.text ?? cur.text, patch.kind ?? cur.kind ?? 'fact', patch.project ?? cur.project ?? '', patch.source ?? cur.source ?? 'user', Date.now(), owner, id,
+    );
+    return this.getMemory(owner, id);
+  }
+
+  // ---- remembered past conversations (agent/memory.ts)
+  upsertEpisode(owner: string, conversationId: string, e: { title: string; summary: string; project?: string; mode?: string; turns?: number }): MemoryEpisode {
+    const now = Date.now();
+    const cur = this.get('SELECT * FROM memory_episodes WHERE owner = ? AND conversation_id = ?', owner, conversationId);
+    const title = redactSecrets(e.title).slice(0, 120);
+    const summary = redactSecrets(e.summary).slice(0, 1200);
+    if (cur) {
+      this.run(
+        'UPDATE memory_episodes SET title = ?, summary = ?, project = ?, mode = ?, turns = ?, updated_at = ? WHERE id = ?',
+        title || s(cur.title), summary || s(cur.summary), e.project || s(cur.project), e.mode || s(cur.mode), e.turns ?? n(cur.turns), now, s(cur.id),
+      );
+      return toEpisode(this.get('SELECT * FROM memory_episodes WHERE id = ?', s(cur.id))!);
+    }
+    const id = randomUUID();
+    this.run(
+      'INSERT INTO memory_episodes (id, owner, conversation_id, title, summary, project, mode, turns, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      id, owner, conversationId, title, summary, e.project ?? '', e.mode ?? 'chat', e.turns ?? 0, now, now,
+    );
+    return toEpisode(this.get('SELECT * FROM memory_episodes WHERE id = ?', id)!);
+  }
+  getEpisode(owner: string, conversationId: string): MemoryEpisode | null {
+    const r = this.get('SELECT * FROM memory_episodes WHERE owner = ? AND conversation_id = ?', owner, conversationId);
+    return r ? toEpisode(r) : null;
+  }
+  listEpisodes(owner: string, limit = 100): MemoryEpisode[] {
+    return this.all('SELECT * FROM memory_episodes WHERE owner = ? ORDER BY updated_at DESC LIMIT ?', owner, limit).map(toEpisode);
+  }
+  deleteEpisode(owner: string, id: string): boolean {
+    return this.run('DELETE FROM memory_episodes WHERE owner = ? AND id = ?', owner, id) > 0;
+  }
+  /** A chat the user deleted: forget what it was about (its summary too). Facts learned from it stay until removed. */
+  forgetConversation(owner: string, conversationId: string): number {
+    return this.run('DELETE FROM memory_episodes WHERE owner = ? AND conversation_id = ?', owner, conversationId) + this.run('DELETE FROM summaries WHERE owner = ? AND conversation_id = ?', owner, conversationId);
+  }
+  clearEpisodes(owner: string): number {
+    return this.run('DELETE FROM memory_episodes WHERE owner = ?', owner);
   }
   listMemories(owner: string, limit = 200): Memory[] {
     return this.all('SELECT * FROM memories WHERE owner = ? ORDER BY updated_at DESC LIMIT ?', owner, limit).map(toMemory);
@@ -556,7 +695,7 @@ export class AgentStore {
       conversationId,
       owner,
       upto,
-      summary,
+      redactSecrets(summary), // a pasted key or code never lives on in a summary
       Date.now(),
     );
   }
@@ -697,6 +836,7 @@ export class AgentStore {
   exportOwner(owner: string) {
     return {
       memories: this.listMemories(owner, 10_000),
+      pastConversations: this.listEpisodes(owner, 10_000),
       notes: this.listNotes(owner, '', 10_000),
       reminders: this.listReminders(owner),
       tasks: this.listTasks(owner, { limit: 1000 }),
@@ -721,7 +861,7 @@ export class AgentStore {
   deleteOwner(owner: string): number {
     ensureKnowledgeTables(this.db);
     let total = 0;
-    for (const t of ['memories', 'notes', 'reminders', 'tasks', 'schedules', 'skills', 'summaries', 'connections', 'oauth_states', 'vault', 'prompts', 'inbox', 'usage_daily', 'app_prefs', 'knowledge', 'mcp_servers', 'setup_settings']) {
+    for (const t of ['memories', 'notes', 'reminders', 'tasks', 'schedules', 'skills', 'summaries', 'connections', 'oauth_states', 'vault', 'prompts', 'inbox', 'usage_daily', 'app_prefs', 'knowledge', 'mcp_servers', 'setup_settings', 'memory_episodes']) {
       total += this.run(`DELETE FROM ${t} WHERE owner = ?`, owner);
     }
     return total;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { secretProblem } from '../memorySafety.js';
 import { defineTool } from './types.js';
 
 /**
@@ -25,7 +26,8 @@ export const learnLessonTool = defineTool({
     const text = a.lesson.replace(/\s+/g, ' ').trim();
     if (SECRETISH.test(text)) return { ok: false, content: 'That lesson looks like it contains a secret. Rewrite it without keys, passwords or tokens.', summary: 'Not saved' };
     const tags = [LESSON_TAG, a.topic?.trim().toLowerCase().replace(/[^a-z0-9 -]/g, '')].filter(Boolean).join(',');
-    const m = ctx.services.store.addMemory(ctx.owner, text, tags);
+    if (secretProblem(text)) return { ok: false, content: 'That lesson looks like it contains a secret. Rewrite it without keys, passwords or tokens.', summary: 'Not saved' };
+    const m = ctx.services.store.addMemory(ctx.owner, text, tags, { kind: 'fact', source: 'auto' });
     return { content: `Lesson saved (id ${m.id}). You will start every future conversation with it.`, summary: 'Learned something', display: { kind: 'memory', action: 'saved', items: [text] } };
   },
 });

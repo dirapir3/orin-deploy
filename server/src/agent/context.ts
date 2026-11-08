@@ -5,6 +5,7 @@ import { buildContext } from '../ai/context.js';
 import type { ChatRequestBody } from '../schemas.js';
 import type { AgentStore, Memory } from './store.js';
 import { buildAgentSystemPrompt, type PersonaOptions } from './persona.js';
+import { getMemorySettings, memoryContext } from './memory.js';
 
 const KEEP_RECENT = 8;
 
@@ -107,21 +108,26 @@ export async function buildAgentContext(
     msgs.shift();
     trimmed++;
   }
-  const lastUser = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
-  const relevant = deps.persona.incognito ? [] : deps.store.searchMemories(deps.owner, lastUser, 8);
-  const recent = deps.persona.incognito ? [] : deps.store.listMemories(deps.owner, 20);
-  const facts = [...relevant, ...recent.filter((m) => !relevant.some((r) => r.id === m.id))].slice(0, 25);
-  // lessons she taught herself (learn_lesson) always come along, so she keeps improving
-  const memories = [...facts, ...deps.store.listLessons(deps.owner).filter((l) => !facts.some((m) => m.id === l.id))];
   // what the user taught her that fits this request (the last two user messages, so "do it like that" still matches)
   const recentAsk = body.messages.filter((m) => m.role === 'user').slice(-2).map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
+  // long-term memory (agent/memory.ts): facts that fit this message and project, and earlier conversations.
+  // Temporary chats and memory turned off bring none.
+  const settings = getMemorySettings(deps.store, deps.owner);
+  const useMemory = !deps.persona.incognito && settings.enabled;
+  const recall = useMemory
+    ? memoryContext(deps.store, deps.owner, { query: recentAsk, project: body.project?.name, conversationId: body.conversationId, budget: deps.persona.lite ? 'lite' : body.mode === 'voice' ? 'voice' : 'full' })
+    : { memories: [], episodes: [], episodesText: '' };
+  const facts = recall.memories;
+  // lessons she taught herself (learn_lesson) always come along, so she keeps improving
+  const memories = [...facts, ...deps.store.listLessons(deps.owner).filter((l) => !facts.some((m) => m.id === l.id))];
   const knowHow = knowHowFor(deps.store, deps.owner, recentAsk, { incognito: deps.persona.incognito });
-  const system = buildAgentSystemPrompt(body.preferences, body.mode, { ...deps.persona, memories, knowHow });
+  const memoryOpts = { recall: recall.episodesText, memoryOff: !deps.persona.incognito && !settings.enabled, project: body.project?.name };
+  const system = buildAgentSystemPrompt(body.preferences, body.mode, { ...deps.persona, memories, knowHow, ...memoryOpts });
   const out: ProviderMessage[] = [{ role: 'system', content: system }];
   if (summary) out.push({ role: 'system', content: `Summary of the earlier part of this conversation:\n${summary}` });
   out.push(...msgs);
   const fullSystem = deps.persona.lite
-    ? (tools: string[]) => buildAgentSystemPrompt(body.preferences, body.mode, { ...deps.persona, lite: false, tools, memories, knowHow })
+    ? (tools: string[]) => buildAgentSystemPrompt(body.preferences, body.mode, { ...deps.persona, lite: false, tools, memories, knowHow, ...memoryOpts })
     : undefined;
   return { messages: out, hasImages: base.hasImages, summarized, trimmed, memories, fullSystem };
 }

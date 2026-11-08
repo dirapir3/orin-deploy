@@ -1,36 +1,72 @@
 import { z } from 'zod';
 import { defineTool } from './types.js';
+import { searchEpisodes, searchMemory, whenText } from '../memory.js';
+import { MemorySecretError } from '../memorySafety.js';
 
 // ---------------- memory ----------------
+// Long-term memory per character (agent/memory.ts). Secrets are refused (agent/memorySafety.ts).
+const KINDS = ['profile', 'preference', 'project', 'person', 'fact'] as const;
+
+/** A memory by id, or the one whose words match best (for corrections). */
+function findMemory(owner: string, store: import('../store.js').AgentStore, idOrText: string) {
+  const byId = store.getMemory(owner, idOrText.trim());
+  if (byId) return byId;
+  const q = idOrText.trim().toLowerCase();
+  const all = store.listMemories(owner, 500);
+  return all.find((m) => m.text.toLowerCase() === q) ?? all.find((m) => m.text.toLowerCase().includes(q)) ?? searchMemory(store, owner, idOrText, 1)[0] ?? null;
+}
+
 export const rememberTool = defineTool({
   name: 'remember',
   writes: true,
   description:
-    'Save a durable fact about the user to long-term memory (preferences, names, important details) so you can use it in future conversations. Only save what the user would want remembered.',
+    'Save a durable fact about the user to long-term memory (who they are, preferences, people, project details) so you can use it in future chats and calls. ' +
+    'To correct something you remember, pass replaces with the old memory\'s id or words: the old version is replaced, not kept beside the new one. Never save passwords, keys or codes (the Secure Vault is for those).',
   schema: z.object({
     fact: z.string().min(2).max(500).describe('The fact, written in third person, e.g. "User\'s sister is called Mira"'),
+    kind: z.enum(KINDS).optional().describe('profile (name, job, location), preference, project (details of something they are building), person, or fact'),
+    about_project: z.boolean().optional().describe('true when it is a detail of the project this chat belongs to'),
+    replaces: z.string().max(300).optional().describe('id or words of the memory this corrects or updates'),
     tags: z.string().max(100).optional().describe('Optional comma-separated tags'),
   }),
   label: () => 'Saving to memory…',
   handler: async (a, ctx) => {
-    const m = ctx.services.store.addMemory(ctx.owner, a.fact.trim(), a.tags ?? '');
-    return { content: `Saved to memory (id ${m.id}): ${m.text}`, summary: 'Saved to memory', display: { kind: 'memory', action: 'saved', items: [m.text] } };
+    const store = ctx.services.store;
+    const fact = a.fact.trim();
+    const project = a.about_project && ctx.project ? ctx.project : undefined;
+    try {
+      const old = a.replaces ? findMemory(ctx.owner, store, a.replaces) : null;
+      if (old) {
+        const m = store.updateMemory(ctx.owner, old.id, { text: fact, source: 'user', ...(a.kind ? { kind: a.kind } : {}), ...(project ? { project } : {}) })!;
+        return { content: `Updated memory (id ${m.id}): was "${old.text}", now "${m.text}"`, summary: 'Updated memory', display: { kind: 'memory', action: 'saved', items: [m.text] } };
+      }
+      const m = store.addMemory(ctx.owner, fact, a.tags ?? '', { kind: a.kind, source: 'user', project, conversationId: ctx.conversationId });
+      return { content: `Saved to memory (id ${m.id}): ${m.text}`, summary: 'Saved to memory', display: { kind: 'memory', action: 'saved', items: [m.text] } };
+    } catch (err) {
+      if (err instanceof MemorySecretError) return { ok: false, content: `${err.message} Nothing was saved. If it is a login, ask the user to save it in Settings > Secure Vault.`, summary: 'Not saved: looks like a secret' };
+      throw err;
+    }
   },
 });
 
 export const recallTool = defineTool({
   name: 'recall',
   writes: true,
-  description: 'Search long-term memory for facts about the user. Use when the user refers to something they told you before.',
+  description: 'Search long-term memory: facts about the user and summaries of earlier conversations. Use when the user refers to something they told you before or something you talked about in another chat or call.',
   schema: z.object({ query: z.string().max(200).describe('What to look for; empty returns the most recent memories') }),
   label: () => 'Checking memory…',
   handler: async (a, ctx) => {
-    const found = ctx.services.store.searchMemories(ctx.owner, a.query, 10);
-    if (!found.length) return { content: 'No matching memories.', summary: 'Nothing in memory' };
+    const found = searchMemory(ctx.services.store, ctx.owner, a.query, 10, ctx.project);
+    const talks = searchEpisodes(ctx.services.store, ctx.owner, a.query, 3, { project: ctx.project, exclude: ctx.conversationId });
+    if (!found.length && !talks.length) return { content: 'No matching memories.', summary: 'Nothing in memory' };
+    const lines = [
+      ...found.map((m) => `- (${m.id}) ${m.text}${m.project ? ` [project: ${m.project}]` : ''}`),
+      ...(talks.length ? ['Earlier conversations:', ...talks.map((e) => `- ${whenText(e.updatedAt)}: ${e.title}. ${e.summary}`)] : []),
+    ];
     return {
-      content: found.map((m) => `- (${m.id}) ${m.text}`).join('\n'),
-      summary: `Recalled ${found.length} ${found.length === 1 ? 'memory' : 'memories'}`,
-      display: { kind: 'memory', action: 'recalled', items: found.map((m) => m.text) },
+      content: lines.join('\n'),
+      summary: `Recalled ${found.length + talks.length} ${found.length + talks.length === 1 ? 'memory' : 'memories'}`,
+      display: { kind: 'memory', action: 'recalled', items: [...found.map((m) => m.text), ...talks.map((e) => e.title)] },
     };
   },
 });
@@ -38,13 +74,18 @@ export const recallTool = defineTool({
 export const forgetTool = defineTool({
   name: 'forget',
   writes: true,
-  description: 'Delete memories when the user asks you to forget something. Pass a memory id or words from the memory.',
+  description: 'Delete memories when the user asks you to forget something. Pass a memory id or words from the memory. Also forgets matching earlier conversations.',
   schema: z.object({ what: z.string().min(1).max(300) }),
   label: () => 'Forgetting…',
   handler: async (a, ctx) => {
-    const gone = ctx.services.store.forgetMemories(ctx.owner, a.what);
-    if (!gone.length) return { ok: false, content: 'No matching memory was found, nothing deleted.', summary: 'Nothing to forget' };
-    return { content: `Deleted ${gone.length}: ${gone.map((m) => m.text).join('; ')}`, summary: 'Forgot it', display: { kind: 'memory', action: 'forgot', items: gone.map((m) => m.text) } };
+    const store = ctx.services.store;
+    const gone = store.forgetMemories(ctx.owner, a.what);
+    const q = a.what.trim().toLowerCase();
+    const talks = q.length >= 4 ? store.listEpisodes(ctx.owner, 200).filter((e) => e.title.toLowerCase().includes(q)).slice(0, 3) : [];
+    for (const e of talks) store.deleteEpisode(ctx.owner, e.id);
+    if (!gone.length && !talks.length) return { ok: false, content: 'No matching memory was found, nothing deleted.', summary: 'Nothing to forget' };
+    const items = [...gone.map((m) => m.text), ...talks.map((e) => `Conversation: ${e.title}`)];
+    return { content: `Deleted ${items.length}: ${items.join('; ')}`, summary: 'Forgot it', display: { kind: 'memory', action: 'forgot', items } };
   },
 });
 

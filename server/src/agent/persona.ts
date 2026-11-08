@@ -40,6 +40,12 @@ export interface PersonaOptions {
   knowHow?: string;
   /** quick lane (agent/quickLane.ts): a short prompt for a plain conversational turn; more_tools opens the rest */
   lite?: boolean;
+  /** earlier conversations with the user, as a prompt section (agent/memory.ts) */
+  recall?: string;
+  /** the user turned memory off for this character */
+  memoryOff?: boolean;
+  /** the project this chat belongs to */
+  project?: string;
 }
 
 /** The user's wall-clock time as ISO 8601 with their offset, e.g. 2026-10-25T08:45:00-07:00. */
@@ -158,8 +164,16 @@ export function buildAgentSystemPrompt(prefs: Preferences | undefined, mode: 'ch
   const facts = (o.memories ?? []).filter((m) => !isLesson(m.tags));
   if (lessons.length && !o.lite) lines.push('', '## What you have learned from your own past work (apply these every time)', ...lessons.map((m) => `- ${m.text}`));
   if (o.knowHow && !o.incognito) lines.push(o.knowHow);
+  if (o.project && !o.incognito) lines.push('', `This chat belongs to the user's project "${o.project}".`);
   if (facts.length) {
-    lines.push('', '## What you remember about the user (from earlier conversations)', ...facts.map((m) => `- ${m.text}`), 'Use these naturally when relevant; do not list them unprompted.');
+    lines.push(
+      '',
+      '## What you remember about the user (from earlier conversations)',
+      ...facts.map((m) => `- ${m.text}${m.project ? ` [project: ${m.project}]` : ''}`),
+      'Use these naturally when relevant; do not list them unprompted. If the user corrects one, call remember with replaces set to it, so the old version is gone.',
+    );
   }
+  if (o.recall && !o.incognito) lines.push('', o.recall);
+  if (o.memoryOff) lines.push('', 'The user has turned memory off for you: you do not remember earlier conversations and cannot save anything to memory. If they ask, they can turn it back on from the Memory page.');
   return lines.join('\n');
 }

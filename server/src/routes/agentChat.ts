@@ -7,6 +7,8 @@ import { agentIdOf, agentOwnerKey, requesterKey } from '../middleware/auth.js';
 import type { UserProviders } from '../ai/userKeys.js';
 import type { ChatRequestBody } from '../schemas.js';
 import { buildAgentContext } from '../agent/context.js';
+import { getMemorySettings, MEMORY_TOOLS, noteTurn } from '../agent/memory.js';
+import { getCharacter } from '../agent/persona.js';
 import { runAgent } from '../agent/loop.js';
 import { isValidTimezone } from '../agent/cron.js';
 import { chatRuns } from '../agent/chatRuns.js';
@@ -101,7 +103,9 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   if (voiceLane) work = work ? `${work}\n\n${VOICE_WORK_LINES}` : VOICE_WORK_LINES;
   // apps the user turned off for this character on the Apps page are not offered (chat and calls)
   const appsOff = agent.store.appsOff(owner);
-  const offered = withoutOffApps(agent.tools.available(owner, agent.services, { incognito }), appsOff);
+  // memory turned off for this character (Memory page): no remember / recall / forget (agent/memory.ts)
+  const memory = getMemorySettings(agent.store, owner);
+  const offered = withoutOffApps(agent.tools.available(owner, agent.services, { incognito }), appsOff).filter((t: { name: string }) => memory.enabled || !MEMORY_TOOLS.has(t.name));
   const tools = voiceLane
     ? [...voiceTools(offered, voiceWork, { passedTo: passed?.passedTo }), cancelTaskTool({ getTask: (o, id) => agent.store.getTask(o, id), cancelTask: (o, id) => agent.cancelTask(o, id) })]
     : offered;
@@ -147,6 +151,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   const toolCtx = agent.toolContext(owner, controller.signal, body.mode === 'voice' ? 'voice' : 'chat', requestBaseUrl(req), timezone);
   toolCtx.incognito = incognito;
   if (conversationId) toolCtx.conversationId = conversationId;
+  if (body.project?.name && !incognito) toolCtx.project = body.project.name;
   // Approval cards and questions are streamed into this conversation; the reply waits for the tap.
   toolCtx.ask = (input) =>
     agent.ask(owner, input, {
@@ -223,6 +228,10 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     }
     run.outcome = { status: !result.reply && result.failedTools.length ? 'failed' : 'done', result: reply };
     deliverIfAway(reply);
+    // after the reply, in the background: learn lasting facts and this chat's summary (agent/memory.ts)
+    if (!incognito && memory.enabled && memory.learn && result.reply) {
+      noteTurn({ store: agent.store, provider, model: config.chat.fastModel || config.chat.model, owner, character: getCharacter(character).name, conversationId, project: body.project?.name, mode: body.mode === 'voice' ? 'voice' : 'chat', messages: body.messages, reply: result.reply });
+    }
     sse(res, 'done', {
       finishReason: result.finishReason === 'length' || result.finishReason === 'max_tokens' ? 'length' : 'stop',
       usage: { inputTokens: result.inputTokens || undefined, outputTokens: result.outputTokens || undefined },

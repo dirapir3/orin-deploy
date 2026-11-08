@@ -1,4 +1,5 @@
 import { knowHowFor } from './knowledge.js';
+import { getMemorySettings, MEMORY_TOOLS, memoryContext } from './memory.js';
 import { join, resolve } from 'node:path';
 import { offAppsNotice, withoutOffApps } from './apps.js';
 import type { AppConfig } from '../config.js';
@@ -412,10 +413,12 @@ export class AgentRuntime {
   private async runAgentTask(task: Task, prompt: string, tz: string | undefined, signal: AbortSignal): Promise<{ text: string; handedOff: boolean }> {
     const provider = this.providerFor(task.owner)!;
     const appsOff = this.store.appsOff(task.owner);
-    const tools = withoutOffApps(this.tools.available(task.owner, this.services, { inTask: true }), appsOff);
-    const recentMem = this.store.listMemories(task.owner, 20);
-    const memories = [...recentMem, ...this.store.listLessons(task.owner).filter((l) => !recentMem.some((m) => m.id === l.id))];
-    const system = buildAgentSystemPrompt(undefined, 'task', { character: task.owner.includes('#') ? task.owner.split('#')[1] : 'orin', timezone: tz, memories, knowHow: knowHowFor(this.store, task.owner, prompt), tools: tools.map((t) => t.name), unavailable: [...this.unavailable(task.owner), ...offAppsNotice(appsOff)], inTask: true });
+    // long-term memory (agent/memory.ts): the facts and earlier conversations that fit this task, unless memory is off
+    const memSettings = getMemorySettings(this.store, task.owner);
+    const tools = withoutOffApps(this.tools.available(task.owner, this.services, { inTask: true }), appsOff).filter((t) => memSettings.enabled || !MEMORY_TOOLS.has(t.name));
+    const recall = memSettings.enabled ? memoryContext(this.store, task.owner, { query: prompt.slice(0, 4000), conversationId: typeof task.input.conversationId === 'string' ? task.input.conversationId : null }) : { memories: [], episodesText: '' };
+    const memories = [...recall.memories, ...this.store.listLessons(task.owner).filter((l) => !recall.memories.some((m) => m.id === l.id))];
+    const system = buildAgentSystemPrompt(undefined, 'task', { character: task.owner.includes('#') ? task.owner.split('#')[1] : 'orin', timezone: tz, memories, recall: recall.episodesText, memoryOff: !memSettings.enabled, knowHow: knowHowFor(this.store, task.owner, prompt), tools: tools.map((t) => t.name), unavailable: [...this.unavailable(task.owner), ...offAppsNotice(appsOff)], inTask: true });
     const resume = Array.isArray(task.input.resume) ? (task.input.resume as ProviderMessage[]) : null;
     // A checkpoint means a server restart interrupted this task mid-way: carry on from it, a few times at most.
     const restarts = task.input.checkpoint ? (typeof task.input.restarts === 'number' ? task.input.restarts : 0) + 1 : 0;
