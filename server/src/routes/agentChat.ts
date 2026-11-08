@@ -17,7 +17,7 @@ import { resolveUploadDocuments } from '../agent/uploads.js';
 import { resolveDesignImages } from '../agent/designFiles.js';
 import { amendments, runKey } from '../agent/amendments.js';
 import { alongsideContext, passAlong, saidText, type Alongside } from '../agent/alongside.js';
-import { cancelTaskTool, isFiller, shouldHandOff, VOICE_HANDOFF_AGAIN_NOTE, VOICE_HANDOFF_NOTE, VOICE_WORK_LINES, voiceTools, type VoiceWorkState } from '../agent/voiceWork.js';
+import { cancelTaskTool, fillerAck, isFiller, shouldHandOff, VOICE_HANDOFF_AGAIN_NOTE, VOICE_HANDOFF_NOTE, VOICE_WORK_LINES, voiceTools, type VoiceWorkState } from '../agent/voiceWork.js';
 
 /** A chat reply keeps working on the server when the app goes away, but not forever. */
 const DETACHED_RUN_MS = 50 * 60_000;
@@ -106,7 +106,9 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     ? [...voiceTools(offered, voiceWork, { passedTo: passed?.passedTo }), cancelTaskTool({ getTask: (o, id) => agent.store.getTask(o, id), cancelTask: (o, id) => agent.cancelTask(o, id) })]
     : offered;
   // quick lane (agent/quickLane.ts): plain conversation gets a short prompt and a few tools; more_tools opens the rest
-  const lite = wantsQuickLane(body, config.agent.quickLane);
+  // a call: "yeah", "okay" after a reply that asked nothing is just conversation, so the quick lane answers it
+  // (spoken approvals of held actions go their own way, and more_tools still opens the rest)
+  const lite = wantsQuickLane(body, config.agent.quickLane) || (voiceLane && config.agent.quickLane && fillerAck(body.messages));
   const runTools = lite ? quickTools(tools) : tools;
   // Fails fast (before streaming) on images the model cannot read, etc.
   let ctx: Awaited<ReturnType<typeof buildAgentContext>>;

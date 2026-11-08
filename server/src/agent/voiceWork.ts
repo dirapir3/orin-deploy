@@ -85,6 +85,16 @@ export function isFiller(said: string): boolean {
   return FILLER.test(s.replace(/\s+/g, ' '));
 }
 
+/** the user's newest words are only an acknowledgement, and her last reply asked them nothing */
+export function fillerAck(messages: { role: string; content: unknown }[]): boolean {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'user' || typeof last.content !== 'string' || !isFiller(last.content)) return false;
+  const prev = [...messages].reverse().find((m) => m.role === 'assistant');
+  if (!prev) return true;
+  const said = typeof prev.content === 'string' ? prev.content.trim() : '';
+  return !said.includes('?');
+}
+
 /** the voice-only block for the system prompt */
 export const VOICE_WORK_LINES = [
   '## Working while you talk (this call)',
