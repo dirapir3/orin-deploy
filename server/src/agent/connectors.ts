@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { defineTool, type AgentServices, type ToolDef } from './tools/types.js';
 import type { AgentStore } from './store.js';
 import { TOKEN_APPS, allTokenAppTools, tokenAppTools } from './tokenApps.js';
+import { expoTokenOf } from './expoApp.js';
 
 /**
  * Connectors framework. Each connector declares what it needs, an OAuth flow and the tools it adds.
@@ -321,6 +322,7 @@ export function listConnectors(svc: AgentServices, store: AgentStore, owner: str
         tools: tokenAppTools[a.id].map((t) => t.name),
         connect: 'token',
         token: { label: a.tokenLabel, help: a.tokenHelp, url: a.tokenUrl },
+        ...(a.id === 'expo' && !c && expoTokenOf({ owner, services: svc })?.source === 'vault' ? { note: 'Using the EXPO_TOKEN login from your Secure Vault. Connect here to check it with Expo.' } : {}),
       };
     }),
   ];

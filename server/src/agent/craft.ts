@@ -66,6 +66,7 @@ export const CODING_CRAFT: string[] = [
   '6. See it run: start web apps and servers and open them (preview_site for a folder, sandbox_run with background true then sandbox_preview for a dev server, review_design for every screen, curl the API endpoints). A build that compiles but was never opened is not done.',
   '7. Ship: give the link (preview_site / publish_site / deploy_site), the APK or the zipped project (sandbox_save). For a repo: git_commit as you go, git_push and github_create_pr when the user wants it on GitHub.',
   '8. Report honestly: the result first, then what you checked with the real numbers (12 of 12 tests pass, the page opened at phone size) and what you did not test.',
+  'iPhone (iOS) apps: build them with Expo in Expo\'s cloud, no Mac needed: expo_check (what is missing), expo_setup_ios (eas.json, bundle ID, link to the user\'s Expo account), expo_build_ios, then expo_build_status for the download. The ios-simulator profile needs only the Expo token; a build for real iPhones needs Apple signing the user sets up on Expo with their own paid Apple Developer account, which you cannot create, pay for or sign in to. Never ask for the Expo token in chat: it goes on the Apps page (Expo). Never submit to the App Store.',
   'Edits to existing code: change only what the job needs, match the project\'s style and libraries, use sandbox_edit_file with exact text for small changes, and keep every existing test passing. Big jobs (a whole app, a migration) go in a background task so they can run long; long builds or installs go in sandbox_job.',
 ];
 
@@ -123,7 +124,7 @@ export function craftLines(tools: string[], mode: 'chat' | 'voice' | 'task'): st
   const out = ['', ...WORK_METHOD];
   if (mode === 'task') out.push(FINAL_CHECK);
   if (tools.includes('remember_know_how')) out.push('', ...LEARNING.filter((l) => !/connect_tool_server/.test(l) || tools.includes('connect_tool_server')));
-  if (tools.includes('run_checks')) out.push('', ...CODING_CRAFT.filter((l) => !/git_push/.test(l) || tools.includes('git_commit')));
+  if (tools.includes('run_checks')) out.push('', ...CODING_CRAFT.filter((l) => (!/git_push/.test(l) || tools.includes('git_commit')) && (!/expo_build_ios/.test(l) || tools.includes('expo_check'))));
   if (tools.includes('sandbox_run')) out.push('', ...SELF_IMPROVEMENT);
   if (canBuild) out.push('', ...DESIGN_STANDARDS.filter((l) => ['review_design', 'design_kit', 'study_reference'].every((t) => tools.includes(t) || !l.includes(t))));
   if (canBuild && tools.includes('match_design')) out.push(...DESIGN_FILES);
@@ -257,7 +258,7 @@ export class WorkTracker {
    */
   preflight(name: string, args: unknown): string | null {
     const cmd = args && typeof args === 'object' && typeof (args as Record<string, unknown>).command === 'string' ? ((args as Record<string, unknown>).command as string) : '';
-    const ships = name === 'publish_site' || (/^sandbox_(run|job)$/.test(name) && SHIP_CMD.test(cmd) && !/expo export/i.test(cmd));
+    const ships = name === 'publish_site' || name === 'expo_build_ios' || (/^sandbox_(run|job)$/.test(name) && SHIP_CMD.test(cmd) && !/expo export/i.test(cmd));
     if (ships && this.design && this.canMatch && this.designDirty && !this.designHeld) {
       this.designHeld = true;
       return `NOT RUN YET: ${name === 'publish_site' ? 'publishing' : 'this build'} is on hold because you are building from the user's design file and have not checked the build against it since your last change. Call match_design (design = the picture path, plus site/path/url of the build), fix what it lists until it says MATCHES (up to four rounds), then call ${name} again.`;

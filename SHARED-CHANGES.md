@@ -1,5 +1,17 @@
 # Shared source changes other builds must keep
 
+## 2026-11-08 00:55 UTC: task "Orin: secure Expo setup and EAS iOS builds" - server only, on gh-public main (on 7f63d1d)
+- NEW server/src/agent/expoApp.ts: Expo token app (Apps page -> Expo, token checked with api.expo.dev meActor before save,
+  stored encrypted like GitHub/Notion/Slack) + tools expo_check, expo_setup_ios (approval), expo_build_ios (approval),
+  expo_build_status. Token also read from a Secure Vault login named EXPO_TOKEN (or an expo.dev login with "token" in the name).
+  Token reaches eas-cli only as the EXPO_TOKEN env of that one sandbox command (holdSecret + hide redaction); never in files.
+- Small edits: tokenApps.ts (TokenAppId += 'expo', EXPO_APP in TOKEN_APPS, expo: expoTools), connectors.ts (vault note on
+  the Expo card), runtime.ts (expo_check app label), craft.ts (one iOS/Expo coding line, only when expo_check is present;
+  expo_build_ios counts as shipping), voiceWork.ts (expo_setup_ios/expo_build_ios are heavy on calls).
+  .apps (8f34c91d) and .cau (bc1c00fd): you have local edits in tokenApps.ts / craft.ts - keep these lines when you rebase.
+- App: no change needed (Apps page token flow is generic). Optional later: APP_ICON.expo in agents.tsx.
+- Tests (dev tree only, not in repo): ~/orin/server/test/expo-eas.test.ts, 12 pass (fake api.expo.dev + fake npx eas-cli).
+
 ## 2026-11-08 00:20 UTC: task f2d220c3 "Orin: remove call history from agent pages" - web 0f-pending on gh-public main (on 2a4b152)
 - App: ~/orin/app/src/app/agents.tsx ONLY: removed CallsSection + callWhen + the listCalls/CallRecord import; Activity tab is
   Recent / Schedules / Skills / Computer. Call records are NOT deleted (db listCalls untouched; Me page still counts calls;

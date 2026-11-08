@@ -38,6 +38,7 @@ export const CAPABILITY_NAMES: Record<string, string> = {
   github_list_repos: 'GitHub',
   notion_search: 'Notion',
   slack_list_channels: 'Slack',
+  expo_check: 'Expo iOS builds (EAS cloud, no Mac)',
   generate_image: 'Image generation',
 };
 

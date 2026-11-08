@@ -10,7 +10,7 @@ import { defineTool, type AgentServices, type ToolContext, type ToolDef } from '
  * the user's approval first.
  */
 
-export type TokenAppId = 'github' | 'notion' | 'slack';
+export type TokenAppId = 'github' | 'notion' | 'slack' | 'expo';
 
 export interface TokenAppSpec {
   id: TokenAppId;
@@ -25,6 +25,8 @@ export interface TokenAppSpec {
   /** checks the token with the provider; returns the account it belongs to */
   verify: (svc: AgentServices, token: string, signal: AbortSignal) => Promise<string>;
 }
+
+import { EXPO_APP, expoTools } from './expoApp.js';
 
 const UA = 'Orin-Agent';
 
@@ -388,12 +390,14 @@ export const TOKEN_APPS: TokenAppSpec[] = [
       return [r.user, r.team].filter(Boolean).join(' · ') || 'Slack';
     },
   },
+  EXPO_APP,
 ];
 
 export const tokenAppTools: Record<TokenAppId, ToolDef[]> = {
   github: [githubListReposTool, githubSearchTool, githubListIssuesTool, githubReadTool, githubCreateIssueTool, githubCommentTool],
   notion: [notionSearchTool, notionReadTool, notionCreatePageTool, notionAppendTool],
   slack: [slackListChannelsTool, slackReadChannelTool, slackSendTool],
+  expo: expoTools,
 };
 
 export const allTokenAppTools: ToolDef[] = Object.values(tokenAppTools).flat();
