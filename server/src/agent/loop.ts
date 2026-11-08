@@ -136,7 +136,7 @@ function parseArgs(raw: string): unknown {
 }
 
 /** Tools that change or read a shared computer/project state, so a batch of them must keep its order. */
-export const STATEFUL_TOOL = /^(sandbox_|computer_|upload_to_computer|deliver_project|publish_site|preview_site|unpublish_site|build_|deploy|git_|apk_|write_file|delete_file|code_map|run_checks|scaffold_project|github_)/;
+export const STATEFUL_TOOL = /^(sandbox_|computer_|upload_to_computer|deliver_project|publish_site|preview_site|unpublish_site|build_|deploy|git_|apk_|write_file|delete_file|code_map|run_checks|code_audit|scaffold_project|github_)/;
 
 /**
  * Some open models leak their chat-format tokens into the tool name ("sandbox_write_file<|channel|>json",

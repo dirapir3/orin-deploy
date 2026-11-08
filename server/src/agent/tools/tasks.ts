@@ -3,6 +3,7 @@ import { defineTool, type AgentServices } from './types.js';
 import { isValidTimezone, nextCronRun } from '../cron.js';
 import type { Schedule } from '../store.js';
 import { amendments, taskKey } from '../amendments.js';
+import { ensureBuiltinSkills } from '../builtinSkills.js';
 
 export function computeNextRun(s: Pick<Schedule, 'cron' | 'intervalSec' | 'timezone'> & { runAt?: number | null }, from: number): number {
   if (s.runAt && !s.cron && !s.intervalSec) {
@@ -119,7 +120,12 @@ export const runSkillTool = defineTool({
   needs: ({ services }) => (services.config.agent.worker ? null : 'WORKER_ENABLED=1'),
   handler: async (a, ctx) => {
     const st = ctx.services.store;
-    const skill = st.findSkill(ctx.owner, a.name_or_id);
+    ensureBuiltinSkills(st, ctx.owner);
+    let skill = st.findSkill(ctx.owner, a.name_or_id);
+    if (!skill) {
+      ensureBuiltinSkills(st, ctx.owner, a.name_or_id);
+      skill = st.findSkill(ctx.owner, a.name_or_id);
+    }
     if (!skill) return { ok: false, content: `No skill called "${a.name_or_id}". Skills: ${st.listSkills(ctx.owner).map((s) => s.name).join(', ') || 'none'}.`, summary: 'Skill not found' };
     const t = st.createTask(ctx.owner, 'skill', skill.name, { skillId: skill.id, extra: a.extra ?? '', timezone: ctx.timezone });
     enqueue(ctx.services, t.id);
@@ -134,6 +140,7 @@ export const listSkillsTool = defineTool({
   label: () => 'Checking skills…',
   handler: async (_a, ctx) => {
     const st = ctx.services.store;
+    ensureBuiltinSkills(st, ctx.owner);
     const skills = st.listSkills(ctx.owner);
     const schedules = st.listSchedules(ctx.owner);
     return {

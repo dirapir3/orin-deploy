@@ -12,6 +12,7 @@ import { parseWhen, whenTextFor, WhenError, type WhenResult } from '../agent/whe
 import { listConnectors, googleAuthUrl, googleConfigured } from '../agent/connectors.js';
 import { connectTokenApp, tokenApp, type TokenAppId } from '../agent/tokenApps.js';
 import { requestBaseUrl } from './agentChat.js';
+import { ensureBuiltinSkills } from '../agent/builtinSkills.js';
 
 const owner = (req: Request) => agentOwnerKey(req);
 const idParam = (req: Request) => String(req.params.id ?? '');
@@ -186,7 +187,10 @@ export function agentRouter(deps: Deps): Router {
   });
 
   // ---- skills
-  r.get('/agent/skills', (req, res) => res.json({ skills: st.listSkills(owner(req)) }));
+  r.get('/agent/skills', (req, res) => {
+    ensureBuiltinSkills(st, owner(req));
+    res.json({ skills: st.listSkills(owner(req)) });
+  });
   const skillName = (b: { name: string; instructions: string }) => {
     const name = (b.name || nameFrom(b.instructions)).slice(0, 80);
     if (name.length < 2) throw new AppError('validation_error', 'Give the skill a name.');

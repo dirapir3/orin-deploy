@@ -65,7 +65,8 @@ export const CODING_CRAFT: string[] = [
   '5. Fix until green: read the failing lines, fix the cause, run_checks again. After two failures the same way, step back: re-read the code and the error, check versions and docs (web_search, fetch_page), try another approach. Install what is missing yourself.',
   '6. See it run: start web apps and servers and open them (preview_site for a folder, sandbox_run with background true then sandbox_preview for a dev server, review_design for every screen, curl the API endpoints). A build that compiles but was never opened is not done.',
   '7. Ship: give the link (preview_site / publish_site / deploy_site), the APK or the zipped project (sandbox_save). For a repo: git_commit as you go, git_push and github_create_pr when the user wants it on GitHub.',
-  '8. Report honestly: the result first, then what you checked with the real numbers (12 of 12 tests pass, the page opened at phone size) and what you did not test.',
+  '8. Audit before you call it ready: run the Code Auditor on the project (code_audit start, fix the code, code_audit recheck after each round, then code_audit finish). Its verdict (READY, NOT_READY, BLOCKED, UNTESTED, NEEDS_REVIEW) is what you report; only READY means ready. Never weaken, skip or delete a test to get there.',
+  '9. Report honestly: the result first, then what you checked with the real numbers (12 of 12 tests pass, the page opened at phone size) and what you did not test.',
   'iPhone (iOS) apps: build them with Expo in Expo\'s cloud, no Mac needed: expo_check (what is missing), expo_setup_ios (eas.json, bundle ID, link to the user\'s Expo account), expo_build_ios, then expo_build_status for the download. The ios-simulator profile needs only the Expo token; a build for real iPhones needs Apple signing the user sets up on Expo with their own paid Apple Developer account, which you cannot create, pay for or sign in to. Never ask for the Expo token in chat: it goes on the Apps page (Expo). Never submit to the App Store.',
   'Edits to existing code: change only what the job needs, match the project\'s style and libraries, use sandbox_edit_file with exact text for small changes, and keep every existing test passing. Big jobs (a whole app, a migration) go in a background task so they can run long; long builds or installs go in sandbox_job.',
 ];
@@ -140,7 +141,7 @@ const VERIFY_UI = new Set(['review_design', 'match_design']);
 const BUILD_WORDS = /\b(build|make|create|code|implement|replicate|recreate|clone|copy|convert|turn (this|it|these)|design|mock-?up|ui|screen|page|layout|pixel|as[- ]is|same as|exactly|figma|app)\b/i;
 const SHIP_CMD = /assemble(Debug|Release)|bundleRelease|\bcap (sync|build|copy)\b|eas build|expo (export|prebuild)|build:apk|orin-(android|capacitor)-build/i;
 const LOOKUP = /^(web_search|news_search|deep_research|fetch_page|study_source|tool_servers|browse|recall|task_status|datetime|list_|get_|read_|search_|sandbox_read_file|sandbox_list_files|sandbox_live_view)/;
-const RUNS_CODE = new Set(['sandbox_run', 'run_code', 'sandbox_job', 'run_checks', 'review_design', 'preview_site', 'check_site', 'publish_site', 'sandbox_browser']);
+const RUNS_CODE = new Set(['sandbox_run', 'run_code', 'sandbox_job', 'run_checks', 'code_audit', 'review_design', 'preview_site', 'check_site', 'publish_site', 'sandbox_browser']);
 
 function pathOf(args: unknown): string {
   if (!args || typeof args !== 'object') return '';
@@ -187,11 +188,13 @@ export class WorkTracker {
   private designMatched = false;
   private designRounds = 0;
   private designHeld = false;
+  /** the Code Auditor was started (code_audit start/recheck) and has not given its verdict yet */
+  private auditOpen = false;
 
   constructor(toolNames: string[], private readonly maxGates = 2) {
     this.canReview = toolNames.includes('review_design');
     this.canMatch = toolNames.includes('match_design');
-    this.canRun = toolNames.some((t) => t === 'sandbox_run' || t === 'run_code' || t === 'run_checks');
+    this.canRun = toolNames.some((t) => t === 'sandbox_run' || t === 'run_code' || t === 'run_checks' || t === 'code_audit');
     this.canLearn = toolNames.includes('learn_lesson');
     this.canKnow = toolNames.includes('remember_know_how');
   }
@@ -232,6 +235,11 @@ export class WorkTracker {
       if (!this.designMatched && this.designRounds < 4) this.designDirty = true; // still owes a fix and another look
     }
     if (ok && RUNS_CODE.has(name)) this.codeDirty = false;
+    if (name === 'code_audit') {
+      const action = (args as { action?: unknown } | null)?.action;
+      if (action === 'finish') this.auditOpen = false;
+      else if (ok) this.auditOpen = true;
+    }
     if (ok && name === 'learn_lesson') this.learned = true;
     if (ok && (name === 'remember_know_how' || name === 'learn_lesson' || name === 'save_skill')) this.keptCorrection = true;
     if (ok && this.failedOnce.has(name) && !LOOKUP.test(name)) this.recovered = name;
@@ -289,6 +297,9 @@ export class WorkTracker {
     } else if (this.codeDirty && this.canRun) {
       note = 'Before you finish: you wrote or changed code and have not run it since. Run it (or its tests or build) with sandbox_run, fix any error, then give your final answer.';
       this.codeDirty = false;
+    } else if (this.auditOpen) {
+      note = 'Before you finish: you started the Code Auditor and it has not given its verdict. Call code_audit with action finish on the same project now, then report that verdict as it is (only READY means ready).';
+      this.auditOpen = false;
     } else if (this.lastFail.size) {
       const [name, err] = [...this.lastFail.entries()].pop()!;
       const claimsSuccess = /\b(done|ready|live|finished|built|published|sent|saved|deployed|installed|fixed|works now)\b/i.test(reply) && !/\b(not|couldn'?t|could not|failed|didn'?t|unable|isn'?t|wasn'?t)\b/i.test(reply);

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentStore, Skill } from './store.js';
+import { ensureBuiltinSkills } from './builtinSkills.js';
 
 /**
  * Know-how: what the user feeds Orin so later work gets better without retraining the model.
@@ -245,6 +246,7 @@ export function pickKnowHow(store: AgentStore, owner: string, request: string, o
     .sort((a, b) => b.s - a.s || b.k.updatedAt - a.k.updatedAt)
     .slice(0, maxRefs)
     .map((x) => x.k);
+  ensureBuiltinSkills(store, owner);
   const skills = matchSkills(store.listSkills(owner), request, opts.maxSkills ?? 2);
   if (opts.mark !== false) markUsed(store, [...rules, ...references].map((k) => k.id));
   return { rules, references, skills };

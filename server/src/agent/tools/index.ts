@@ -29,6 +29,7 @@ import { compareToReferenceTool, studyReferenceTool } from './reference.js';
 import { designSpecTool, matchDesignTool } from './designFile.js';
 import { sandboxBrowserTool, sandboxEditFileTool, sandboxJobTool, sandboxLiveViewTool } from './computer.js';
 import { codingTools } from './coding.js';
+import { codeAuditTool } from './audit.js';
 import { gitTools } from './git.js';
 
 export const ALL_TOOLS: ToolDef[] = [
@@ -83,6 +84,7 @@ export const ALL_TOOLS: ToolDef[] = [
   sandboxBrowserTool,
   sandboxLiveViewTool,
   ...codingTools,
+  codeAuditTool,
   ...gitTools,
 ];
 

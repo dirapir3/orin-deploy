@@ -15,7 +15,7 @@ import type { Task } from './store.js';
  */
 
 /** tools that never run inside a spoken turn: they go to the background */
-const HEAVY = /^(sandbox_(run|write_file|write_files|edit_file|job|browser|preview|save)|computer_|upload_to_computer|deliver_project|run_code|run_checks|code_map|scaffold_project|git_(clone|commit|push)|github_create_pr|browse$|browser_(open|click)|deep_research|publish_site|preview_site|trial_project|study_source|study_reference|compare_to_reference|review_design|generate_image|match_design|build_|deploy|apk_|expo_(setup_ios|build_ios))/;
+const HEAVY = /^(sandbox_(run|write_file|write_files|edit_file|job|browser|preview|save)|computer_|upload_to_computer|deliver_project|run_code|run_checks|code_audit|code_map|scaffold_project|git_(clone|commit|push)|github_create_pr|browse$|browser_(open|click)|deep_research|publish_site|preview_site|trial_project|study_source|study_reference|compare_to_reference|review_design|generate_image|match_design|build_|deploy|apk_|expo_(setup_ios|build_ios))/;
 
 export function isHeavyVoiceTool(name: string): boolean {
   return HEAVY.test(name);

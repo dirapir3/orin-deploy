@@ -15,6 +15,7 @@ import { saveLogin, toPublic, updateLogin, signToken } from '../agent/vault.js';
 import { deleteWsFile, listFiles, MAX_WORKSPACE_BYTES, usedBytes, wipeWorkspace, workspaceDir, writeWsFile } from '../agent/workspace.js';
 import { listConnectors } from '../agent/connectors.js';
 import { requestBaseUrl } from './agentChat.js';
+import { ensureBuiltinSkills } from '../agent/builtinSkills.js';
 
 /** agent-scoped owner (X-Orin-Agent header) */
 const owner = (req: Request) => agentOwnerKey(req);
@@ -212,11 +213,14 @@ export function agentExtraRouter(deps: Deps): Router {
       // work done inside a chat reply (a build, browsing, files) is listed too, not only background tasks
       for (const a of chatRuns.activity(o)) tasks.push({ ...a, agent: agentId });
       for (const x of st.listSchedules(o)) schedules.push({ ...x, owner: undefined, agent: agentId });
+      ensureBuiltinSkills(st, o);
       for (const x of st.listSkills(o)) skills.push({ ...x, owner: undefined, agent: agentId });
       for (const x of st.listReminders(o)) reminders.push({ ...x, owner: undefined, agent: agentId });
       for (const p of st.listPrompts(o, 'pending', 20)) prompts.push({ ...p, owner: undefined, agent: agentId });
     });
     (tasks as { createdAt: number }[]).sort((a, b) => b.createdAt - a.createdAt);
+    // newest first across the agents, so the user's own skills come before the built-in Code Auditor
+    (skills as { updatedAt: number }[]).sort((a, b) => b.updatedAt - a.updatedAt);
     res.json({ tasks, schedules, skills, reminders, prompts, now: Date.now() });
   });
 
