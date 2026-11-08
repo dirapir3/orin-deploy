@@ -32,6 +32,8 @@ const CODING = new Set([
   'design_kit',
   'study_reference',
   'compare_to_reference',
+  'design_spec',
+  'match_design',
 ]);
 
 export function isCodingTool(name: string): boolean {

@@ -103,6 +103,17 @@ export const LEARNING: string[] = [
   '- Be honest about what this is: you get better at the user\'s work by keeping and applying what they teach you; you are not retraining your model.',
 ];
 
+/**
+ * Building from a design file the user sends: the design is the spec. This overrides the house
+ * style above (kit look, one accent, font limits), because the user's design wins.
+ */
+export const DESIGN_FILES = [
+  'Design files: when the user sends a design to build (a mockup, a screenshot of an app or site, a Figma/Sketch/XD export, several screens), build it as-is, pixel for pixel, like a careful front-end developer. The design is the spec and beats every house-style rule above: its fonts, colours, sizes, spacing, radii, shadows, icons and text exactly, nothing added, removed or "improved" (no extra sections, no kit look, no different copy). The picture is saved on the server; its path is in the [Picture N saved as designs/....png] note on the message.',
+  '- 1. design_spec on each screen first: it measures the screen size, exact colours and every section, card and button box, and writes the text and type. Read it together with the picture itself; trust the measured numbers over your eye. 2. Build at the design\'s width: real text (never an image of the design), the named Google Fonts, CSS variables for the exact colours, inline SVG icons drawn to match, real images only if the user gave them (else a neutral block the same size and colour). 3. match_design on the build (site, sandbox path or url) and fix every difference it lists, biggest first; run it again until it says MATCHES, up to four rounds. 4. Then review_design only for broken things (errors, blank page, sideways scrolling); ignore its style advice where the design deliberately differs.',
+  '- Several screens: build each as its own route or tab with working navigation between them, and match_design each one. A phone design for a mobile app: build it as a web app at that width, match it, then package it (Capacitor/Expo) and say it was matched in the browser, not on a phone. A desktop-only design: keep it faithful at its width and make narrower screens tidy without changing the desktop look. If something in the picture cannot be read (blurry text, a photo you do not have), say which in one line instead of guessing.',
+  '- In your answer, say how close it got (match_design\'s visual match and score) and anything still different. Never call it identical unless match_design said MATCHES. When you hand the build to a background task, put the picture path(s) and "build it as-is, then match_design until it matches" in the task\'s goal: a task cannot see the chat\'s pictures otherwise.',
+];
+
 const BUILD_TOOLS = ['write_file', 'sandbox_write_file', 'sandbox_write_files', 'sandbox_edit_file', 'publish_site'];
 
 /** The craft block for the system prompt, sized to the mode and the tools available. */
@@ -115,6 +126,7 @@ export function craftLines(tools: string[], mode: 'chat' | 'voice' | 'task'): st
   if (tools.includes('run_checks')) out.push('', ...CODING_CRAFT.filter((l) => !/git_push/.test(l) || tools.includes('git_commit')));
   if (tools.includes('sandbox_run')) out.push('', ...SELF_IMPROVEMENT);
   if (canBuild) out.push('', ...DESIGN_STANDARDS.filter((l) => ['review_design', 'design_kit', 'study_reference'].every((t) => tools.includes(t) || !l.includes(t))));
+  if (canBuild && tools.includes('match_design')) out.push(...DESIGN_FILES);
   return out;
 }
 
@@ -122,7 +134,9 @@ export function craftLines(tools: string[], mode: 'chat' | 'voice' | 'task'): st
 
 const UI_FILE = /\.(html?|css|jsx|tsx|vue|svelte)$/i;
 const CODE_FILE = /\.(m?js|cjs|ts|py|sh|go|rs|java|kt|rb|php)$/i;
-const VERIFY_UI = new Set(['review_design']);
+const VERIFY_UI = new Set(['review_design', 'match_design']);
+/** words that turn a picture into a design to build ("build this", "make this screen", "clone", "code it") */
+const BUILD_WORDS = /\b(build|make|create|code|implement|replicate|recreate|clone|copy|convert|turn (this|it|these)|design|mock-?up|ui|screen|page|layout|pixel|as[- ]is|same as|exactly|figma|app)\b/i;
 const SHIP_CMD = /assemble(Debug|Release)|bundleRelease|\bcap (sync|build|copy)\b|eas build|expo (export|prebuild)|build:apk|orin-(android|capacitor)-build/i;
 const LOOKUP = /^(web_search|news_search|deep_research|fetch_page|study_source|tool_servers|browse|recall|task_status|datetime|list_|get_|read_|search_|sandbox_read_file|sandbox_list_files|sandbox_live_view)/;
 const RUNS_CODE = new Set(['sandbox_run', 'run_code', 'sandbox_job', 'run_checks', 'review_design', 'preview_site', 'check_site', 'publish_site', 'sandbox_browser']);
@@ -165,9 +179,17 @@ export class WorkTracker {
   private keptCorrection = false;
   private readonly canReview: boolean;
   private readonly canRun: boolean;
+  private readonly canMatch: boolean;
+  /** the user sent a design picture to build from */
+  private design = false;
+  private designDirty = false;
+  private designMatched = false;
+  private designRounds = 0;
+  private designHeld = false;
 
   constructor(toolNames: string[], private readonly maxGates = 2) {
     this.canReview = toolNames.includes('review_design');
+    this.canMatch = toolNames.includes('match_design');
     this.canRun = toolNames.some((t) => t === 'sandbox_run' || t === 'run_code' || t === 'run_checks');
     this.canLearn = toolNames.includes('learn_lesson');
     this.canKnow = toolNames.includes('remember_know_how');
@@ -176,6 +198,13 @@ export class WorkTracker {
   /** The user's latest message: a correction or a lasting preference should be saved, not just acknowledged. */
   noteRequest(userText: string): void {
     this.corrected = isCorrection(userText);
+    // a picture saved from chat plus words about building it: the build must match the picture
+    this.design = /\[Picture \d+ saved as /.test(userText) && BUILD_WORDS.test(userText);
+  }
+
+  /** A design file is being built from (the user sent one, or the model measured one). */
+  get designMode(): boolean {
+    return this.design;
   }
 
   /** Record one finished tool call. Returns a recovery note for the model when it is going in circles. */
@@ -190,6 +219,17 @@ export class WorkTracker {
       }
     }
     if (ok && VERIFY_UI.has(name)) this.uiDirty = false;
+    if (ok && name === 'design_spec') this.design = true;
+    if (this.design && ok && ['write_file', 'sandbox_write_file', 'sandbox_write_files', 'sandbox_edit_file'].includes(name) && this.uiDirty) {
+      this.designDirty = true;
+      this.designMatched = false;
+    }
+    if (ok && name === 'match_design') {
+      this.designRounds++;
+      this.designDirty = false;
+      this.designMatched = /^MATCHES\b/.test(content);
+      if (!this.designMatched && this.designRounds < 4) this.designDirty = true; // still owes a fix and another look
+    }
     if (ok && RUNS_CODE.has(name)) this.codeDirty = false;
     if (ok && name === 'learn_lesson') this.learned = true;
     if (ok && (name === 'remember_know_how' || name === 'learn_lesson' || name === 'save_skill')) this.keptCorrection = true;
@@ -216,9 +256,13 @@ export class WorkTracker {
    * changed since the last review_design is held once, with a note to review it first.
    */
   preflight(name: string, args: unknown): string | null {
-    if (!this.uiDirty || !this.canReview || this.held) return null;
     const cmd = args && typeof args === 'object' && typeof (args as Record<string, unknown>).command === 'string' ? ((args as Record<string, unknown>).command as string) : '';
-    const ships = name === 'publish_site' || (/^sandbox_(run|job)$/.test(name) && SHIP_CMD.test(cmd));
+    const ships = name === 'publish_site' || (/^sandbox_(run|job)$/.test(name) && SHIP_CMD.test(cmd) && !/expo export/i.test(cmd));
+    if (ships && this.design && this.canMatch && this.designDirty && !this.designHeld) {
+      this.designHeld = true;
+      return `NOT RUN YET: ${name === 'publish_site' ? 'publishing' : 'this build'} is on hold because you are building from the user's design file and have not checked the build against it since your last change. Call match_design (design = the picture path, plus site/path/url of the build), fix what it lists until it says MATCHES (up to four rounds), then call ${name} again.`;
+    }
+    if (!this.uiDirty || !this.canReview || this.held) return null;
     if (!ships) return null;
     this.held = true;
     return `NOT RUN YET: ${name === 'publish_site' ? 'publishing' : 'this build'} is on hold because the page/app files changed and you have not looked at the result. Call review_design on it first (site for a workspace site, path for a folder on your computer), fix every high and medium issue, then call ${name} again.`;
@@ -231,7 +275,14 @@ export class WorkTracker {
   gate(reply: string): string | null {
     if (this.gates >= this.maxGates) return null;
     let note: string | null = null;
-    if (this.uiDirty && this.canReview) {
+    if (this.design && this.canMatch && this.designDirty) {
+      note =
+        this.designRounds === 0
+          ? 'Before you finish: you built from the user\'s design file but have not compared the result with it. Call match_design now (design = the picture path from the [Picture ... saved as ...] note, plus site, path or url of your build), fix every difference it lists, and run it again until it says MATCHES (up to four rounds). Then give your final answer with the match it reached.'
+          : 'Before you finish: match_design still says NOT YET. Fix the differences it listed (start with the biggest), then run match_design again. If after four rounds it still does not match, say so in your answer with the score and what is still different.';
+      this.designDirty = false;
+      this.uiDirty = false;
+    } else if (this.uiDirty && this.canReview) {
       note = 'Before you finish: you changed the files of a page or app screen and have not looked at the result. Call review_design on it now, fix every high or medium issue it reports, then give your final answer.';
       this.uiDirty = false;
     } else if (this.codeDirty && this.canRun) {

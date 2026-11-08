@@ -14,6 +14,7 @@ import { buildWorkContext } from '../agent/workContext.js';
 import { quickTools, wantsQuickLane } from '../agent/quickLane.js';
 import { offAppsNotice, withoutOffApps } from '../agent/apps.js';
 import { resolveUploadDocuments } from '../agent/uploads.js';
+import { resolveDesignImages } from '../agent/designFiles.js';
 import { amendments, runKey } from '../agent/amendments.js';
 import { alongsideContext, passAlong, saidText } from '../agent/alongside.js';
 
@@ -50,6 +51,8 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   const timezone = body.timezone && isValidTimezone(body.timezone) ? body.timezone : undefined;
   if (agent.store.usageToday(account, 'chat') >= dailyLimits().chat) throw new AppError('rate_limited', `You've reached today's limit of ${dailyLimits().chat} messages. It resets at midnight UTC.`);
   const incognito = Boolean(body.incognito);
+  // pictures on the user's messages are kept as files, so a design can be measured and matched
+  resolveDesignImages(agent.services, owner, body.messages, incognito);
   const conversationId = body.conversationId && !incognito ? body.conversationId : null;
   // The same reply sent again (the connection dropped before the app heard back): join the run
   // already working on it (or replay the one that finished) instead of doing the job a second time.

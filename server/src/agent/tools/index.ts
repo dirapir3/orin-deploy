@@ -26,6 +26,7 @@ import { learnLessonTool } from './learn.js';
 import { connectToolServerTool, forgetKnowHowTool, recallKnowHowTool, rememberKnowHowTool, studySourceTool, toolServersTool, trialProjectTool, useToolServerTool } from './knowledge.js';
 import { designKitTool } from './design.js';
 import { compareToReferenceTool, studyReferenceTool } from './reference.js';
+import { designSpecTool, matchDesignTool } from './designFile.js';
 import { sandboxBrowserTool, sandboxEditFileTool, sandboxJobTool, sandboxLiveViewTool } from './computer.js';
 import { codingTools } from './coding.js';
 import { gitTools } from './git.js';
@@ -75,6 +76,8 @@ export const ALL_TOOLS: ToolDef[] = [
   designKitTool,
   studyReferenceTool,
   compareToReferenceTool,
+  designSpecTool,
+  matchDesignTool,
   sandboxEditFileTool,
   sandboxJobTool,
   sandboxBrowserTool,

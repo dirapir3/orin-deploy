@@ -227,6 +227,8 @@ export async function runAgent(o: RunAgentOptions): Promise<RunAgentResult> {
 
   // what this run built, checked and failed (agent/craft.ts): no unverified build or hidden failure at the end
   const tracker = new WorkTracker((o.escalate?.tools ?? o.tools).map((t) => t.name));
+  // tools that look at pictures (design_spec, match_design) use the same model as the turn
+  if (!o.ctx.runLlm) o.ctx.runLlm = { provider: o.provider, model: o.escalate?.model ?? model };
   const lastUserMsg = [...o.messages].reverse().find((m) => m.role === 'user');
   if (lastUserMsg && typeof lastUserMsg.content === 'string') tracker.noteRequest(lastUserMsg.content);
   // a run resumed after a restart (or continued in the background) keeps what it already built and checked

@@ -43,6 +43,12 @@ const RANKS: [RegExp, number][] = [
   [/llama[-_. ]?(4|3\.3)[\w.-]*(maverick|70b|405b)/i, 66],
 ];
 
+/** model families that read pictures; text-only coders (DeepSeek, Qwen-Coder, Kimi K2, GLM 4.x, gpt-oss...) are not on it */
+const VISION = /claude|gpt-?(4o|4\.1|5)|\bo[34]\b|gemini|grok[-_. ]?[4-9]|llama[-_. ]?4|qwen[\w.-]*vl|qwen[-_. ]?3\.5|glm[-_. ]?[\d.]+v|kimi[-_. ]?(k2\.5|vl)|pixtral|mistral[-_. ]?medium|minimax[-_. ]?m2\.5|vision/i;
+export function likelyVision(id: string): boolean {
+  return VISION.test(id) && !/coder|codex-mini|deepseek/i.test(id);
+}
+
 function version(id: string): number {
   // later versions of one family rank a little higher: claude-opus-4-5 over claude-opus-4
   const nums = id.match(/\d+(\.\d+)?/g)?.map(Number).filter((n) => n < 100) ?? [];
@@ -121,8 +127,10 @@ export function codeRouter(o: CodeRouterOptions): ChatProvider {
     supportsTools: o.base.supportsTools,
     async *streamChat(req: ChatRequest): AsyncGenerator<ChatChunk> {
       const work = !req.fast && (req.tools?.length ?? 0) >= WORK_TOOLS;
+      // a turn carrying a picture (a design to build) needs a model that can see it
+      const seesPictures = req.messages.some((m) => (m.images?.length ?? 0) > 0);
       if (work) {
-        const list = (await candidates()).filter((m) => (resting.get(key(m)) ?? 0) < now()).slice(0, 2);
+        const list = (await candidates()).filter((m) => (resting.get(key(m)) ?? 0) < now() && (!seesPictures || likelyVision(m))).slice(0, 2);
         for (const model of list) {
           let sent = false;
           try {

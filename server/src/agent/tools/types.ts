@@ -118,6 +118,8 @@ export interface ToolContext {
   incognito?: boolean;
   /** secrets used in this run, redacted from any tool output */
   secrets?: Set<string>;
+  /** the model running this turn (the user's own key when they set one), for tools that need to look at pictures */
+  runLlm?: { provider: ChatProvider; model: string };
 }
 
 export interface ToolDef<S extends z.ZodType = z.ZodType> {
