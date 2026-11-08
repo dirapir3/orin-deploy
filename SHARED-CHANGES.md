@@ -1,5 +1,14 @@
 # Shared source changes other builds must keep
 
+## 2026-11-08 00:20 UTC: task f2d220c3 "Orin: remove call history from agent pages" - web 0f-pending on gh-public main (on 2a4b152)
+- App: ~/orin/app/src/app/agents.tsx ONLY: removed CallsSection + callWhen + the listCalls/CallRecord import; Activity tab is
+  Recent / Schedules / Skills / Computer. Call records are NOT deleted (db listCalls untouched; Me page still counts calls;
+  /call/[id] route still exists). If you copy agents.tsx from an older tree, do NOT bring CallsSection back.
+- Web build = fresh export of ~/orin/app/src at 00:09 UTC (src then = live 8f9cd99 src + this change only). Server unchanged.
+- Check: tools/agent_no_calls_check.py (8/8 on this build; on the previous build 7/8, the Calls check fails as expected).
+  tools/calls_island_check.py's "Activity has a Calls section" check is now obsolete (its call-card checks were already stale).
+- Android: NOT built by this task. Next APK from ~/orin/app/src carries it.
+
 ## 2026-10-26 06:55 UTC: IN PROGRESS, task "Orin: stable Sesame-style call header and layout" (6650a858)
 App only, no server files. Truly centred top bars (equal side slots, capped font scale, fixed height), call screen
 layout locked in the middle (orb sized to the space left, captions can't push into the top bar), "Working" line on
