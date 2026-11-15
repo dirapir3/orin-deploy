@@ -153,12 +153,15 @@ export const listSkillsTool = defineTool({
 export const createScheduleTool = defineTool({
   name: 'create_schedule',
   description:
-    'Create a routine that runs the agent automatically on a schedule (e.g. "every weekday at 8am summarise tech news"). Give a 5-field cron in the user\'s timezone, or every_minutes. Results appear in Tasks with a notification.',
+    'Run the agent automatically later, unattended, and post the result to the user\'s chat. For ONE run at a set time ("in 3 minutes look up X and tell me", "tomorrow at 9 check Y") give run_at_minutes or once_at, never a cron: a cron with a day and month repeats every year. ' +
+    'For a routine ("every weekday at 8am summarise tech news") give a 5-field cron in the user\'s timezone, or every_minutes. A plain reminder with nothing to do is create_reminder; anything that has to look something up or do work at that time belongs here.',
   schema: z.object({
     title: z.string().min(2).max(120),
     instructions: z.string().min(5).max(8000).describe('What the agent should do each run (self-contained)'),
     cron: z.string().max(100).optional().describe('e.g. "0 8 * * 1-5" = 8:00 on weekdays'),
     every_minutes: z.number().int().min(1).max(10080).optional(),
+    run_at_minutes: z.number().min(1).max(525600).optional().describe('One run, this many minutes from now'),
+    once_at: z.string().max(40).optional().describe('One run at this local date and time, ISO like 2026-11-16T09:00 (user\'s timezone)'),
     timezone: z.string().max(60).optional().describe('IANA timezone; defaults to the user\'s'),
     skill: z.string().max(100).optional().describe('Run this saved skill instead of instructions'),
   }),
@@ -168,7 +171,18 @@ export const createScheduleTool = defineTool({
     const svc = ctx.services;
     const tz = a.timezone || ctx.timezone || 'UTC';
     if (!isValidTimezone(tz)) return { ok: false, content: `Unknown timezone "${tz}".`, summary: 'Bad timezone' };
-    if (!a.cron && !a.every_minutes) return { ok: false, content: 'Give either cron or every_minutes. Ask the user how often if unclear.', summary: 'Needs a time' };
+    let runAt: number | null = null;
+    if (a.run_at_minutes) runAt = Date.now() + Math.round(a.run_at_minutes * 60_000);
+    else if (a.once_at) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})/.exec(a.once_at);
+      if (!m) return { ok: false, content: 'once_at must look like 2026-11-16T09:00.', summary: 'Bad time' };
+      runAt = localToUtc(+m[1]!, +m[2]!, +m[3]!, +m[4]!, +m[5]!, tz);
+    }
+    if (runAt !== null) {
+      if (runAt <= Date.now()) return { ok: false, content: 'That time has already passed. Ask the user which time they meant.', summary: 'Time passed' };
+      if (a.cron || a.every_minutes) return { ok: false, content: 'Give either a one-time run (run_at_minutes / once_at) or a repeat (cron / every_minutes), not both.', summary: 'Both given' };
+    }
+    if (!a.cron && !a.every_minutes && runAt === null) return { ok: false, content: 'Give run_at_minutes or once_at for one run, or cron / every_minutes for a routine. Ask the user when if unclear.', summary: 'Needs a time' };
     const intervalSec = a.every_minutes ? Math.max(a.every_minutes * 60, svc.config.agent.scheduleMinIntervalSec) : null;
     let skillId: string | null = null;
     if (a.skill) {
@@ -178,12 +192,14 @@ export const createScheduleTool = defineTool({
     }
     let next: number;
     try {
-      next = computeNextRun({ cron: a.cron ?? null, intervalSec, timezone: tz }, Date.now());
+      next = computeNextRun({ cron: a.cron ?? null, intervalSec, timezone: tz, runAt }, Date.now());
     } catch (e) {
       return { ok: false, content: `Invalid schedule: ${(e as Error).message}`, summary: 'Invalid schedule' };
     }
     const s = svc.store.createSchedule(ctx.owner, { title: a.title, prompt: a.instructions, skillId, cron: a.cron ?? null, intervalSec, timezone: tz, enabled: true, nextRunAt: next });
     const when = new Date(next).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+    if (runAt !== null)
+      return { content: `One-time run scheduled (id ${s.id}) for ${when} (${tz}). It runs once, posts the result to the user's chat, then switches off.`, summary: `Runs once at ${when}`, display: { kind: 'schedule', id: s.id, title: s.title, nextRunAt: next } };
     return { content: `Schedule created (id ${s.id}). First run: ${when} (${tz}).`, summary: `Scheduled, first run ${when}`, display: { kind: 'schedule', id: s.id, title: s.title, nextRunAt: next } };
   },
 });
@@ -207,3 +223,15 @@ export const deleteScheduleTool = defineTool({
     return st.deleteSchedule(ctx.owner, a.id) ? { content: 'Schedule deleted.', summary: 'Schedule deleted' } : { ok: false, content: 'No schedule with that id.', summary: 'Not found' };
   },
 });
+
+/** A wall-clock time in an IANA zone -> epoch ms (two passes settle DST edges). */
+export function localToUtc(y: number, mo: number, d: number, h: number, mi: number, tz: string): number {
+  const want = Date.UTC(y, mo - 1, d, h, mi);
+  let t = want;
+  for (let i = 0; i < 2; i++) {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+    const seen = Date.UTC(+p.year!, +p.month! - 1, +p.day!, +p.hour!, +p.minute!);
+    t += want - seen;
+  }
+  return t;
+}

@@ -372,6 +372,43 @@ export const sandboxBrowserTool = defineTool({
 
 // ------------------------------------------------------------------ live view
 
+/** True when her own browser has a page open for this owner (so a step on that page belongs in the live view). */
+export function browserPageOpen(owner: string): { url: string } | null {
+  const p = lastPage.get(owner);
+  return p?.url ? { url: p.url } : null;
+}
+
+/** Opens (or reuses) the live view of her browser; returns the link, or why it could not start. */
+export async function openLiveView(ctx: ToolContext): Promise<{ url?: string; error?: string }> {
+  const known = liveLink.get(ctx.owner);
+  if (known) return { url: known };
+  if (sandboxNeeds(ctx.services, ctx.owner)) return { error: 'Her computer is not set up.' };
+  try {
+    const r = await runBrowser(ctx, { action: 'live' });
+    if (!r.ok || !r.password) return { error: r.error ?? 'The live view did not start.' };
+    const base = await withSandbox(ctx, async (s) => (s.publicUrl ? s.publicUrl(6080) : ''));
+    if (!base) return { error: 'The live view needs the cloud computer (E2B).' };
+    const url = `${base.replace(/\/$/, '')}/vnc.html?autoconnect=1&resize=scale&reconnect=1&show_dot=1&password=${encodeURIComponent(r.password)}`;
+    liveLink.set(ctx.owner, url);
+    log(ctx, 'command', 'Opened the live view');
+    return { url };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
+/** The browser page as it is now (after the user worked it in the live view), formatted like sandbox_browser read. */
+export async function readPageNow(ctx: ToolContext): Promise<string | null> {
+  try {
+    const r = await runBrowser(ctx, { action: 'read' });
+    if (r.url && r.elements) lastPage.set(ctx.owner, { url: r.url, elements: r.elements });
+    return formatPage(ctx.owner, r);
+  } catch {
+    return null;
+  }
+}
+
+
 export const sandboxLiveViewTool = defineTool({
   name: 'sandbox_live_view',
   description:

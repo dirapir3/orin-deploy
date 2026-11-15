@@ -2,6 +2,7 @@ import { durableHealth } from './durable/state.js';
 import { pagesRouter } from './agent/pages.js';
 import { noteActivity } from './lib/keepWarm.js';
 import { agentExtraRouter } from './routes/agentExtra.js';
+import { chatSyncRouter } from './routes/chatSync.js';
 import { uploadsRouter } from './routes/uploads.js';
 import { webAppRouter } from './webApp.js';
 import { verifyToken } from './agent/vault.js';
@@ -249,6 +250,7 @@ export function createApp(deps: Deps) {
   app.use(['/v1/agent', '/v1/connectors'], guestOk, createRateLimiter(config, 'agent', 4));
   app.use('/v1', agentRouter(deps));
   app.use('/v1', agentExtraRouter(deps));
+  app.use('/v1', chatSyncRouter(deps));
   app.use('/v1', powersRouter(deps));
   app.use('/v1', uploadsRouter(deps));
 

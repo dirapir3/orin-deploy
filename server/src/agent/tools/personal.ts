@@ -166,7 +166,7 @@ export const readNoteTool = defineTool({
 export const createReminderTool = defineTool({
   name: 'create_reminder',
   description:
-    'Schedule a reminder notification on the user\'s phone. Only call this when you know the exact time; if the user did not say when, ask them first. Convert relative times ("in 20 minutes", "tomorrow 9am") using the current date/time and the user\'s timezone.',
+    'Schedule a reminder notification on the user\'s phone: it only shows the text, nothing is looked up or worked out. When the user wants something done at that time (look up, check, calculate, write, send), use create_schedule with run_at_minutes or once_at instead. Only call this when you know the exact time; if the user did not say when, ask them first. Convert relative times ("in 20 minutes", "tomorrow 9am") using the current date/time and the user\'s timezone.',
   schema: z.object({
     text: z.string().min(1).max(300).describe('What to remind about, phrased for the notification'),
     due_at: z.string().min(10).max(40).optional().describe('ISO 8601 date-time with the user\'s timezone offset, e.g. 2026-10-15T09:00:00-07:00. Use for a clock time ("tomorrow 9am").'),

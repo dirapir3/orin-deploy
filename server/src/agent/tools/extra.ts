@@ -14,6 +14,7 @@ function changeWords(d: SiteDiff): string {
 import { deployToHuggingFace, findHfToken, HF_TOKEN_HELP, hfSpaceName, HostError, verifyPublicUrl } from '../hosting.js';
 import { computeNextRun } from './tasks.js';
 import { defineTool, type ToolContext } from './types.js';
+import { browserPageOpen, openLiveView, readPageNow } from './computer.js';
 
 /** Asks the user a question mid-task through an in-app prompt and waits for the answer. */
 export const askUserTool = defineTool({
@@ -68,21 +69,56 @@ export const askSecretTool = defineTool({
 export const askUserStepTool = defineTool({
   name: 'ask_user_step',
   description:
-    'Ask the user to do one step themselves that you cannot do (enter a code, pass a captcha, enter a payment card, sign in with 2-step verification, approve something on their phone), optionally on a page they open from the card. Waits until they tap Done or say they cannot.',
+    'Ask the user to do one step themselves that you cannot do (enter a code, pass a captcha, enter a payment card, sign in with 2-step verification, approve something on their phone), optionally on a page they open from the card. Waits until they tap Done or say they cannot. ' +
+    'When the step is on a page in YOUR browser (sandbox_browser), set live_view true and leave url out: the card then opens the live view of your browser, the user does the step right there in your session, and after Done you get that page as it is now, so you carry on from it. A url they open on their own phone is a different browser: your browser never sees what they do there.',
   schema: z.object({
     step: z.string().min(3).max(300).describe('What the user does, as one short instruction'),
-    url: z.string().url().max(2000).optional().describe('The page they open to do it'),
+    url: z.string().url().max(2000).optional().describe('A page they open on their own device (not your browser)'),
+    live_view: z.boolean().optional().describe('true: the step happens in your own browser; the card opens its live view'),
     details: z.string().max(1500).optional().describe('Anything that helps them do it'),
   }),
   label: () => 'Waiting for you…',
   timeoutMs: 31 * 60_000,
   handler: async (a, ctx) => {
     if (!ctx.ask) return { ok: false, content: 'Nobody can do the step right now. Tell the user what is needed and stop.', summary: 'No one to ask' };
-    const r = await ctx.ask({ kind: 'step', title: a.step, body: a.details ?? '', url: a.url, headline: a.url ? new URL(a.url).hostname : undefined, tool: 'ask_user_step' });
-    if (r.decision === 'done') return { content: `The user says the step is done${r.answer ? `: "${r.answer}"` : ''}. Check the result before you go on.`, summary: 'You did the step' };
-    return { ok: false, content: `The user could not do the step (${r.decision}${r.answer ? `: "${r.answer}"` : ''}). Do not retry; say what is still needed.`, summary: 'Step not done' };
+    // the step belongs in her own browser when she says so, or when her browser already has that site (or any page, and no url was given) open
+    const open = browserPageOpen(ctx.owner);
+    let sameSite = false;
+    try {
+      sameSite = Boolean(open && a.url && new URL(open.url).hostname === new URL(a.url).hostname);
+    } catch {}
+    const wantLive = a.live_view === true || sameSite || (a.live_view === undefined && !a.url && Boolean(open));
+    let live: { url?: string; error?: string } | null = null;
+    if (wantLive) live = await openLiveView(ctx);
+    const url = live?.url ?? a.url;
+    const r = await ctx.ask({
+      kind: 'step',
+      title: a.step,
+      body: [a.details ?? '', live?.url ? 'Open the live view to do it in Orin’s browser, then tap Done.' : ''].filter(Boolean).join('\n'),
+      url,
+      headline: live?.url ? `Live view${open ? ` · ${hostOf(open.url)}` : ''}` : a.url ? hostOf(a.url) : undefined,
+      tool: 'ask_user_step',
+    });
+    const note = wantLive && !live?.url ? ` (The live view could not open: ${live?.error ?? 'unknown'}.)` : '';
+    if (r.decision === 'done') {
+      let page = '';
+      if (live?.url) {
+        const now = await readPageNow(ctx);
+        if (now) page = `\n\nYour browser now (after the user's step):\n${now.slice(0, 6000)}`;
+      }
+      return { content: `The user says the step is done${r.answer ? `: "${r.answer}"` : ''}.${note} ${page ? 'Carry on from the page below.' : 'Check the result before you go on.'}${page}`, summary: 'You did the step' };
+    }
+    return { ok: false, content: `The user could not do the step (${r.decision}${r.answer ? `: "${r.answer}"` : ''}).${note} Do not retry; say what is still needed.`, summary: 'Step not done' };
   },
 });
+
+function hostOf(u: string): string {
+  try {
+    return new URL(u).hostname;
+  } catch {
+    return '';
+  }
+}
 
 export const vaultListTool = defineTool({
   name: 'vault_list',
