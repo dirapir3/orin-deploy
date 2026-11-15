@@ -1,5 +1,17 @@
 # Shared source changes other builds must keep
 
+## 2026-11-08 02:55 UTC: task "Orin: natural voice turn-taking and immediate interruption" - commit on gh-public main (on 56b4f5a). Rebase before you push.
+- Barge-in itself already existed (Android: hooks/useBargeIn.ts level meter on the call mic; web: recognizer interim words ->
+  bargeIn()). Gap fixed: after you talk over her, her NEXT answer used to get her whole unspoken reply as context, as if you heard it.
+- APP, 3 files (in ~/orin/app/src AND the web build of this commit): lib/wire.ts INTERRUPTED marker + StoredTurn.heard: a reply
+  that was stopped, or that you talked over, goes to the model as only what had been spoken aloud + "(The user cut this reply off here.)".
+  store/chat.ts: heardOf map (in memory), stop(cid, 'voice', heard), NEW markHeard(cid, heard) for a reply that had finished
+  streaming but was still being spoken. components/VoiceCall.tsx: spokenRef (pieces that started playing, via speaker onChunk),
+  chatReplyRef (not the call's own say() lines); cutReply() records what was heard. Keep these hunks in any whole-file copy.
+- Test: app/tests/interruptedReply.test.ts (6). Full app suite in ~/orin/app: 119/119.
+- Web build = ~/.vbg/build/src (live 7f63d1d + Aura edits of 350dc44 + MessageBubble of 56b4f5a) + these 3 files. Entry literal
+  diff vs 56b4f5a = only these modules. NOT in an APK yet (Android 1.0.24+ from ~/orin/app/src carries it). No server change.
+
 ## 2026-11-08 01:45 UTC: task 74de4756 "remove static sparkle badge + working indicator" - commit on gh-public main (on 350dc44, Aura). Rebase before you push.
 - APP, ONE file: components/MessageBubble.tsx. (1) REMOVED the static AgentAvatar (pink sparkle badge) at the far right of the last
   reply's copy/speak/retry/time row. (2) ReplyWaiting gains props agent + writing: testID chat-waiting = live AgentAvatar(18) +
