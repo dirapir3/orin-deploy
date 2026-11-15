@@ -1,5 +1,11 @@
 # Shared source changes other builds must keep
 
+## 2026-11-08 task "Orin: finish memory conflict resolution and deployment" - durable restore race fix (server/src/durable/sync.ts)
+- Live restart lost the agent DB for that run: the old instance saved a new DB version (flip manifest + delete old chunks) while
+  the new instance was restoring -> "could not restore one file (missing chunk 0)" -> server ran on an EMPTY agent DB (remote copy
+  stayed safe, path protected). restoreOnce now re-reads that file's manifest and retries (4 tries, 2s/4s/6s) on "missing chunk" /
+  "content check failed" only. Test: server/test/durable.test.ts "mid-restore" (fails on old code, passes now). Keep in any copy.
+
 ## 2026-11-08 task "Orin: finish memory conflict resolution and deployment" - 3 commits on gh-public main (on 988efb9). Rebase before you push.
 - SERVER (d531c64, 2eaeea7): agent/memory.ts (learned facts by kind, past-conversation summaries, per-project recall, corrections,
   forget), agent/memorySafety.ts (secrets refused / blanked), memory settings per character (Memory + Learn from chats), routes in

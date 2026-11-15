@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { bytes, getBytes, getInt, getStr, int, str, type FirestoreClient, type FsWrite } from './firestore.js';
+import { bytes, getBytes, getInt, getStr, int, str, type FirestoreClient, type FsDoc, type FsWrite } from './firestore.js';
 
 /**
  * Durable storage: mirrors the server's data folder (agent SQLite database with memories, notes,
@@ -37,6 +37,10 @@ export interface DurableOptions {
   maxFileBytes?: number;
   maxTotalBytes?: number;
   intervalMs?: number;
+  /** restore: tries per file when a chunk is missing or fails its check (default 4) */
+  restoreRetries?: number;
+  /** restore: base wait between those tries (default 2000 ms) */
+  restoreRetryMs?: number;
 }
 
 interface Remote {
@@ -171,37 +175,64 @@ export class DurableSync {
     this.st.restoreFailures = 0;
     const docs = await this.o.client.list(FILES);
     mkdirSync(this.dir, { recursive: true });
-    for (const d of docs) {
+    for (const first of docs) {
+      let d: FsDoc = first;
       let rel = '';
-      try {
-        rel = this.open(getBytes(d, 'p'), `path:${d.id}`).toString('utf8');
-        if (!isSafeRel(rel) || this.fileId(rel) !== d.id) throw new Error('bad path entry');
-        const r: Remote = { id: d.id, h: getStr(d, 'h'), v: getStr(d, 'v'), n: getInt(d, 'n') };
-        const parts: Buffer[] = [];
-        for (let i = 0; i < r.n; i++) {
-          const b = await this.o.client.get(BLOBS, `${r.id}_${r.v}_${i}`);
-          if (!b) throw new Error(`missing chunk ${i}`);
-          parts.push(this.open(getBytes(b, 'd'), `${r.id}:${r.v}:${i}`));
+      // During a deploy or restart the old instance can still be saving: it may flip a file to a new version and delete
+      // the old chunks while we read them ("missing chunk"). Re-read that file's manifest and try again before giving up.
+      const tries = this.o.restoreRetries ?? 4;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          rel = this.open(getBytes(d, 'p'), `path:${d.id}`).toString('utf8');
+          this.restoreDoc(d, rel, await this.chunksOf(d));
+          break;
+        } catch (e) {
+          const raced = /^(missing chunk|content check failed)/.test((e as Error).message);
+          if (raced && attempt + 1 < tries) {
+            await new Promise((r) => setTimeout(r, (this.o.restoreRetryMs ?? 2000) * (attempt + 1)));
+            const again: FsDoc | null = await this.o.client.get(FILES, first.id).catch(() => d);
+            if (!again) break; // deleted meanwhile: nothing to restore
+            d = again;
+            continue;
+          }
+          this.st.restoreFailures++;
+          if (rel) this.protectedPaths.add(rel);
+          // Keep the entry known so it is never treated as "deleted locally".
+          if (rel) this.remote.set(rel, { id: d.id, h: getStr(d, 'h'), v: getStr(d, 'v'), n: getInt(d, 'n') });
+          this.log('warn', `could not restore one file (${(e as Error).message})`);
+          break;
         }
-        const content = Buffer.concat(parts);
-        if (this.mac(content) !== r.h) throw new Error('content check failed');
-        const abs = join(this.dir, rel);
-        mkdirSync(dirname(abs), { recursive: true });
-        // A stale -wal/-shm next to a restored database would corrupt it.
-        if (rel.endsWith('.sqlite')) for (const s of ['-wal', '-shm']) rmSync(abs + s, { force: true });
-        const tmp = `${abs}.durable-${process.pid}.tmp`;
-        writeFileSync(tmp, content, { mode: rel.endsWith('.env') ? 0o600 : 0o644 });
-        renameSync(tmp, abs);
-        this.remote.set(rel, r);
-        this.st.restoredFiles++;
-      } catch (e) {
-        this.st.restoreFailures++;
-        if (rel) this.protectedPaths.add(rel);
-        // Keep the entry known so it is never treated as "deleted locally".
-        if (rel) this.remote.set(rel, { id: d.id, h: getStr(d, 'h'), v: getStr(d, 'v'), n: getInt(d, 'n') });
-        this.log('warn', `could not restore one file (${(e as Error).message})`);
       }
     }
+  }
+
+  private async chunksOf(d: FsDoc): Promise<Buffer[]> {
+    const id = d.id;
+    const v = getStr(d, 'v');
+    const n = getInt(d, 'n');
+    const parts: Buffer[] = [];
+    for (let i = 0; i < n; i++) {
+      const b = await this.o.client.get(BLOBS, `${id}_${v}_${i}`);
+      if (!b) throw new Error(`missing chunk ${i}`);
+      parts.push(this.open(getBytes(b, 'd'), `${id}:${v}:${i}`));
+    }
+    return parts;
+  }
+
+  private restoreDoc(d: FsDoc, rel: string, parts: Buffer[]) {
+    if (!isSafeRel(rel) || this.fileId(rel) !== d.id) throw new Error('bad path entry');
+    const r: Remote = { id: d.id, h: getStr(d, 'h'), v: getStr(d, 'v'), n: getInt(d, 'n') };
+    const content = Buffer.concat(parts);
+    if (this.mac(content) !== r.h) throw new Error('content check failed');
+    const abs = join(this.dir, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    // A stale -wal/-shm next to a restored database would corrupt it.
+    if (rel.endsWith('.sqlite')) for (const s of ['-wal', '-shm']) rmSync(abs + s, { force: true });
+    const tmp = `${abs}.durable-${process.pid}.tmp`;
+    writeFileSync(tmp, content, { mode: rel.endsWith('.env') ? 0o600 : 0o644 });
+    renameSync(tmp, abs);
+    this.remote.set(rel, r);
+    this.st.restoredFiles++;
   }
 
   // ---------- saving ----------
