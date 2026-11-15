@@ -1,5 +1,17 @@
 # Shared source changes other builds must keep
 
+## 2026-11-08 task "Orin: finish memory conflict resolution and deployment" - 3 commits on gh-public main (on 988efb9). Rebase before you push.
+- SERVER (d531c64, 2eaeea7): agent/memory.ts (learned facts by kind, past-conversation summaries, per-project recall, corrections,
+  forget), agent/memorySafety.ts (secrets refused / blanked), memory settings per character (Memory + Learn from chats), routes in
+  routes/agent.ts: GET /memories (memories+episodes+settings), PATCH /memories/:id, PATCH /memory/settings, DELETE
+  /memory/conversations[/:id], DELETE /memory/chat/:cid. New table memory_episodes lives in the same agent DB that durable/ mirrors to
+  Firestore. routes/agent.ts conflict with Code Auditor (0fe2568) resolved by keeping BOTH import lines. Test: server/test/memory.test.ts.
+- APP, 5 files (web build of this commit = ~/.vbg/build/src of 988efb9 + these; ALSO in ~/orin/app/src): app/memory.tsx (edit, kind
+  filter, earlier conversations, switches; uses Banner, not ~/orin's LoadProblem), services/agentApi.ts (memoryPage, editMemory,
+  setMemorySettings, forgetEpisode, clearEpisodes, forgetChat, MemoryItem.kind/source/project), services/api.ts + store/chat.ts
+  (projectFor(cid) sends {project} with each chat turn), components/DrawerPanel.tsx (deleting a chat calls forgetChat). Keep these hunks
+  in any whole-file copy. NOT in an APK yet (next Android build from ~/orin/app/src carries it).
+
 ## 2026-11-08 02:55 UTC: task "Orin: natural voice turn-taking and immediate interruption" - commit on gh-public main (on 56b4f5a). Rebase before you push.
 - Barge-in itself already existed (Android: hooks/useBargeIn.ts level meter on the call mic; web: recognizer interim words ->
   bargeIn()). Gap fixed: after you talk over her, her NEXT answer used to get her whole unspoken reply as context, as if you heard it.
