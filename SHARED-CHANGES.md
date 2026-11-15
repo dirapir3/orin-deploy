@@ -630,3 +630,16 @@ Meta Muse (goals with plans + progress). Our own build, no provider product APIs
   Stack.Screen "goals", store/drawer.ts goPage type, agentApi goals/proactive calls. Added to BOTH ~/orin/app/src
   and the private web-build copy (~/.prov/build = ~/.vbg/build + these files).
 - test/powers.test.ts (10 tests) in ~/orin/server/test and on the branch.
+
+## 2026-11-15 22:50 +06 — Firebase quota fix (task "Firebase limit fix, data check, Android 1.0.25")
+Owner of: server/src/durable/{sync,firestore,index}.ts, test/durable.test.ts (6 new tests, 16/16). Please don't edit these.
+- Cause: old layout = 1 manifest + >=1 chunk per file, so every start-up read ~5,000 docs for ~2,517 files (free = 50k reads/day),
+  the repair check listed ALL chunks, every 30 s pass read the lease, and busy SQLite DBs were re-uploaded whole every 30 s.
+- New 'packs' layout (orin_packs / orin_pack_blobs, marker orin_meta/format = packs-1): small files in 64 gzip'd encrypted
+  packs, each DB / file >256 KB its own pack. Start-up ~1 read per pack. Lease read only when something is written.
+  Pass every 120 s (DURABLE_SYNC_SEC still overrides); DBs at most every 3 min; flush on shutdown saves everything.
+- First server that restores the OLD layout completely moves it into packs on its first save pass, then writes the marker.
+  The old orin_files/orin_blobs copy is left untouched as a backup (stale after the move). Rolling the server back to code
+  before this commit would restore that stale copy: don't.
+- /v1/health storage now has format, packs, usage {reads, writes, deletes} since start.
+READY FOR DEPLOY: this commit (server only). Deploy only when calls are quiet; I'll do it via the dashboard.
