@@ -113,6 +113,7 @@ SNAP_JS = r"""
     if (isField && type !== 'password' && tag !== 'select') item.value = (el.value || '').slice(0, 60);
     if (tag === 'select') item.value = el.options[el.selectedIndex] ? el.options[el.selectedIndex].text.slice(0, 40) : '';
     if (type === 'password') item.filled = !!el.value;
+    if (type === 'checkbox' || type === 'radio') item.checked = !!el.checked;
     if (el.closest('form')) item.form = true;
     if (r.bottom < 0 || r.top > innerHeight) item.offscreen = true;
     out.push(item);

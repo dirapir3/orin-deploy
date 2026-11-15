@@ -159,7 +159,7 @@ async function keepSignins(ctx: ToolContext, rev: string | undefined, soon: bool
   } catch {}
 }
 
-type El = { ref: number; tag: string; name: string; type?: string; href?: string; value?: string; filled?: boolean; form?: boolean; offscreen?: boolean };
+type El = { ref: number; tag: string; name: string; type?: string; href?: string; value?: string; filled?: boolean; checked?: boolean; form?: boolean; offscreen?: boolean };
 interface PageResult {
   ok: boolean;
   error?: string;
@@ -226,6 +226,7 @@ function elLine(e: El): string {
   if (e.href && e.tag === 'a') bits.push(`-> ${e.href}`);
   if (e.value) bits.push(`value="${e.value}"`);
   if (e.type === 'password') bits.push(e.filled ? '(filled)' : '(empty)');
+  if (e.checked !== undefined) bits.push(e.checked ? '(ticked)' : '(not ticked)');
   if (e.offscreen) bits.push('(below/above)');
   return bits.filter(Boolean).join(' ');
 }
@@ -290,7 +291,11 @@ export const sandboxBrowserTool = defineTool({
     try {
       host = page?.url ? new URL(page.url).host : '';
     } catch {}
-    const filled = (page?.elements ?? []).filter((e) => e.value || e.filled).slice(0, 12);
+    // what the form will send: typed fields, and only the boxes and options that are ticked (not every choice on the page)
+    const filled = (page?.elements ?? [])
+      .filter((e) => !['submit', 'button', 'reset', 'hidden', 'image'].includes(e.type ?? ''))
+      .filter((e) => (e.type === 'radio' || e.type === 'checkbox' ? e.checked === true : Boolean(e.value || e.filled)))
+      .slice(0, 12);
     // only when her browser has a page open: a picture is never worth starting a computer for
     const image = page ? await approvalShot(ctx, el?.ref) : undefined;
     return {
@@ -299,7 +304,7 @@ export const sandboxBrowserTool = defineTool({
       body: `Orin wants to press a control in her browser that sends, submits, buys, books or deletes something.${image ? ' The picture shows the page now, with that control outlined.' : ''}`,
       fields: [
         { label: 'Page', value: page?.url ?? 'unknown' },
-        ...filled.map((e) => ({ label: e.name || e.tag, value: e.type === 'password' ? '(hidden)' : redactSecrets(ctx.owner, e.value ?? '') })),
+        ...filled.map((e) => ({ label: e.name || e.tag, value: e.type === 'password' ? '(hidden)' : e.type === 'radio' || e.type === 'checkbox' ? `${e.value || 'on'} (ticked)` : redactSecrets(ctx.owner, e.value ?? '') })),
       ],
       ...(image ? { image } : {}),
       ...(liveLink.get(ctx.owner) ? { url: liveLink.get(ctx.owner) } : {}),
