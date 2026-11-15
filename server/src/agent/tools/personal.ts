@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { applyEdits, notePreview } from '../pages.js';
 import { defineTool } from './types.js';
 import { searchEpisodes, searchMemory, whenText } from '../memory.js';
 import { MemorySecretError } from '../memorySafety.js';
@@ -89,61 +90,75 @@ export const forgetTool = defineTool({
   },
 });
 
-// ---------------- notes ----------------
+// ---------------- notes & pages ----------------
+const findNote = (ctx: { owner: string; services: { store: import('../store.js').AgentStore } }, idOrTitle: string) =>
+  ctx.services.store.getNote(ctx.owner, idOrTitle) ?? ctx.services.store.findNoteByTitle(ctx.owner, idOrTitle);
+const noteCard = (n: import('../store.js').Note) => ({ kind: 'note' as const, id: n.id, title: n.title, format: n.kind, preview: notePreview(n) });
+
 export const createNoteTool = defineTool({
   name: 'create_note',
   writes: true,
-  description: 'Create a Markdown note the user can open in the Notes screen (lists, plans, drafts, summaries).',
-  schema: z.object({ title: z.string().min(1).max(200), body: z.string().max(100_000).describe('Markdown content') }),
+  description:
+    'Write a Markdown note the user keeps in Notes & pages: a plan, list, draft, summary, research write-up or document. It shows as a card under your reply that opens the full note, so in chat say only the one thing that matters and let the note hold the rest. For a designed, visual result (a page, report with layout, comparison, guide) use create_page instead.',
+  schema: z.object({ title: z.string().min(1).max(200).describe('A clear title, as the user would name it'), body: z.string().max(100_000).describe('Markdown content: short headings, lists, tables, links') }),
   label: (a) => `Writing note “${a.title.slice(0, 40)}”…`,
   handler: async (a, ctx) => {
-    const n = ctx.services.store.createNote(ctx.owner, a.title, a.body, ctx.mode === 'task' ? 'task' : 'chat');
-    return { content: `Note created (id ${n.id}): "${n.title}"`, summary: 'Note saved', display: { kind: 'note', id: n.id, title: n.title } };
+    const n = ctx.services.store.createNote(ctx.owner, a.title, a.body, ctx.mode === 'task' ? 'task' : 'chat', 'note');
+    return { content: `Note created (id ${n.id}): "${n.title}". The user sees it as a card under your reply.`, summary: 'Note saved', display: noteCard(n) };
   },
 });
 
 export const updateNoteTool = defineTool({
   name: 'update_note',
   writes: true,
-  description: 'Update an existing note by id or exact title: replace the body, append text, or rename it.',
+  description:
+    'Change an existing note or page by id or exact title. Prefer `edits` (exact text replacements, each old text appearing once) for small changes; `body` replaces everything; `append` adds to the end; `title` renames. The version before the change is kept, so the user can restore it.',
   schema: z.object({
     id_or_title: z.string().min(1).max(200),
     title: z.string().max(200).optional(),
+    edits: z.array(z.object({ old: z.string().min(1).max(20_000), new: z.string().max(50_000) })).max(30).optional().describe('Exact replacements, applied in order'),
     body: z.string().max(100_000).optional().describe('Replaces the whole body'),
     append: z.string().max(50_000).optional().describe('Appended to the end'),
   }),
   label: () => 'Updating note…',
   handler: async (a, ctx) => {
     const st = ctx.services.store;
-    const target = st.getNote(ctx.owner, a.id_or_title) ?? st.findNoteByTitle(ctx.owner, a.id_or_title);
-    if (!target) return { ok: false, content: `No note found with id or title "${a.id_or_title}". Use list_notes.`, summary: 'Note not found' };
-    const n = st.updateNote(ctx.owner, target.id, { title: a.title, body: a.body, append: a.append })!;
-    return { content: `Note updated: "${n.title}" (id ${n.id})`, summary: 'Note updated', display: { kind: 'note', id: n.id, title: n.title } };
+    const target = findNote(ctx, a.id_or_title);
+    if (!target) return { ok: false, content: `No note or page found with id or title "${a.id_or_title}". Use list_notes.`, summary: 'Note not found' };
+    let body = a.body;
+    if (a.edits?.length) {
+      const r = applyEdits(a.body ?? target.body, a.edits);
+      if (!r.ok) return { ok: false, content: `${r.error} Nothing was changed.`, summary: 'Edit did not match' };
+      body = r.body;
+    }
+    const n = st.updateNote(ctx.owner, target.id, { title: a.title, body, append: body === undefined ? a.append : undefined })!;
+    return { content: `${n.kind === 'page' ? 'Page' : 'Note'} updated: "${n.title}" (id ${n.id}). The earlier version is kept for restore.`, summary: `${n.kind === 'page' ? 'Page' : 'Note'} updated`, display: noteCard(n) };
   },
 });
 
 export const listNotesTool = defineTool({
   name: 'list_notes',
-  description: 'List or search the user\'s notes. Returns ids, titles and the start of each note.',
-  schema: z.object({ query: z.string().max(200).optional() }),
+  description: 'List or search the user\'s notes and pages. Returns ids, kinds, titles and the start of each.',
+  schema: z.object({ query: z.string().max(200).optional(), kind: z.enum(['note', 'page']).optional() }),
   label: () => 'Looking through notes…',
   handler: async (a, ctx) => {
-    const notes = ctx.services.store.listNotes(ctx.owner, a.query ?? '', 20);
-    if (!notes.length) return { content: 'No notes found.', summary: 'No notes' };
-    return { content: notes.map((n) => `- ${n.title} (id ${n.id}, updated ${new Date(n.updatedAt).toISOString()}): ${n.body.slice(0, 160).replace(/\n/g, ' ')}`).join('\n'), summary: `${notes.length} notes` };
+    const notes = ctx.services.store.listNotes(ctx.owner, a.query ?? '', 20, a.kind);
+    if (!notes.length) return { content: a.query ? `Nothing matches "${a.query}".` : 'No notes or pages yet.', summary: 'No notes' };
+    return { content: notes.map((n) => `- [${n.kind}] ${n.title} (id ${n.id}, updated ${new Date(n.updatedAt).toISOString()}): ${notePreview(n, 160)}`).join('\n'), summary: `${notes.length} notes` };
   },
 });
 
 export const readNoteTool = defineTool({
   name: 'read_note',
-  description: 'Read the full text of a note by id or exact title.',
+  description: 'Read the full text of a note, or the HTML of a page, by id or exact title.',
   schema: z.object({ id_or_title: z.string().min(1).max(200) }),
   label: () => 'Reading note…',
   handler: async (a, ctx) => {
-    const st = ctx.services.store;
-    const n = st.getNote(ctx.owner, a.id_or_title) ?? st.findNoteByTitle(ctx.owner, a.id_or_title);
+    const n = findNote(ctx, a.id_or_title);
     if (!n) return { ok: false, content: 'Note not found.', summary: 'Note not found' };
-    return { content: `# ${n.title}\n\n${n.body.slice(0, 20_000)}`, summary: `Read “${n.title.slice(0, 40)}”` };
+    const max = 40_000;
+    const more = n.body.length > max ? `\n\n[… ${n.body.length - max} more characters not shown]` : '';
+    return { content: `${n.kind === 'page' ? 'Page (HTML)' : 'Note'}: ${n.title} (id ${n.id})\n\n${n.body.slice(0, max)}${more}`, summary: `Read “${n.title.slice(0, 40)}”` };
   },
 });
 

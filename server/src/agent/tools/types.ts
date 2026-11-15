@@ -10,7 +10,8 @@ import type { SandboxManager } from '../sandbox/manager.js';
 export type ToolDisplay =
   | { kind: 'sources'; sources: { title: string; url: string }[] }
   | { kind: 'image'; url: string; prompt: string; provider: string }
-  | { kind: 'note'; id: string; title: string }
+  | { kind: 'note'; id: string; title: string; format?: 'note' | 'page'; preview?: string }
+  | { kind: 'voice_note'; text: string; character: string; seconds: number }
   | { kind: 'memory'; action: 'saved' | 'recalled' | 'forgot'; items: string[] }
   | { kind: 'reminder'; id: string; text: string; dueAt: number }
   | { kind: 'task'; id: string; title: string; status: string }

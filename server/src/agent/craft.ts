@@ -118,12 +118,21 @@ export const DESIGN_FILES = [
 
 const BUILD_TOOLS = ['write_file', 'sandbox_write_file', 'sandbox_write_files', 'sandbox_edit_file', 'publish_site'];
 
+/** What Orin makes for the user (Sesame-style notes, pages and voice notes). */
+const DELIVERABLES = [
+  'Deliverables (notes, pages, voice notes):',
+  '- Something the user will keep, read later or share (a plan, research, a guide, a draft, a list longer than a few lines) goes in a note (create_note, Markdown) or, when layout helps (a report, comparison, itinerary, dashboard, small tool), a page (create_page). It shows as a card under your reply. In chat then say the one thing that matters in a sentence or two; never paste the content again or say "I created a note".',
+  '- To change one, update_note with exact edits on the same note; never make a second copy. The earlier version is kept for the user.',
+  '- send_voice_note when the user asks for a voice note or to hear something; write it as you would say it.',
+];
+
 /** The craft block for the system prompt, sized to the mode and the tools available. */
 export function craftLines(tools: string[], mode: 'chat' | 'voice' | 'task'): string[] {
   const canBuild = tools.some((t) => BUILD_TOOLS.includes(t));
   if (mode === 'voice') return ['', ...WORK_METHOD.slice(0, 1), ...VOICE_METHOD];
   const out = ['', ...WORK_METHOD];
   if (mode === 'task') out.push(FINAL_CHECK);
+  if (tools.includes('create_page') || tools.includes('create_note')) out.push('', ...DELIVERABLES);
   if (tools.includes('remember_know_how')) out.push('', ...LEARNING.filter((l) => !/connect_tool_server/.test(l) || tools.includes('connect_tool_server')));
   if (tools.includes('run_checks')) out.push('', ...CODING_CRAFT.filter((l) => (!/git_push/.test(l) || tools.includes('git_commit')) && (!/expo_build_ios/.test(l) || tools.includes('expo_check'))));
   if (tools.includes('sandbox_run')) out.push('', ...SELF_IMPROVEMENT);

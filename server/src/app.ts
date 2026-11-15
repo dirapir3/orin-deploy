@@ -1,4 +1,5 @@
 import { durableHealth } from './durable/state.js';
+import { pagesRouter } from './agent/pages.js';
 import { noteActivity } from './lib/keepWarm.js';
 import { agentExtraRouter } from './routes/agentExtra.js';
 import { uploadsRouter } from './routes/uploads.js';
@@ -202,6 +203,9 @@ export function createApp(deps: Deps) {
   const avatars = AvatarStore.forConfig(config);
   app.use('/v1/profile', guestOk, createRateLimiter(config, 'profile'), profileRouter(avatars));
   app.get('/v1/avatars/:file', avatarFileHandler(avatars));
+
+  // Pages Orin made (Notes & pages): opened by a signed one-hour link, under a strict sandbox.
+  app.use('/v1/pages', createRateLimiter(config, 'pages', 1), pagesRouter(() => agent.store));
 
   // Images made by the image tool. File names are random ids, so they are not guessable.
   app.use('/v1/media', express.static(agent.services.mediaDir, { fallthrough: true, index: false, dotfiles: 'deny', maxAge: '7d' }));

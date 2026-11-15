@@ -15,6 +15,7 @@ import {
   cancelReminderTool,
 } from './personal.js';
 import { calculatorTool, dateTimeTool } from './utility.js';
+import { artifactTools } from './artifacts.js';
 import { generateImageTool } from './image.js';
 import { createTaskTool, deepResearchTool, taskStatusTool, addToTaskTool, saveSkillTool, runSkillTool, listSkillsTool, createScheduleTool, deleteScheduleTool } from './tasks.js';
 import { runCodeTool, browseTool } from './adapters.js';
@@ -44,6 +45,7 @@ export const ALL_TOOLS: ToolDef[] = [
   updateNoteTool,
   listNotesTool,
   readNoteTool,
+  ...artifactTools,
   createReminderTool,
   listRemindersTool,
   cancelReminderTool,

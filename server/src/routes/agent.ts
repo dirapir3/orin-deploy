@@ -5,6 +5,7 @@ import { AppError } from '../errors.js';
 import { agentOwnerKey, agentOwners, requesterKey } from '../middleware/auth.js';
 import { chatRuns } from '../agent/chatRuns.js';
 import { parseBody } from './util.js';
+import { notePreview, pageLink } from '../agent/pages.js';
 import { capabilityReport } from '../agent/capabilities.js';
 import { computeNextRun } from '../agent/tools/tasks.js';
 import { isValidTimezone } from '../agent/cron.js';
@@ -20,7 +21,7 @@ import { isLesson } from '../agent/tools/learn.js';
 const owner = (req: Request) => agentOwnerKey(req);
 const idParam = (req: Request) => String(req.params.id ?? '');
 
-const NoteBody = z.object({ title: z.string().trim().min(1).max(200), body: z.string().max(200_000).default('') });
+const NoteBody = z.object({ title: z.string().trim().min(1).max(200), body: z.string().max(200_000).default(''), kind: z.enum(['note', 'page']).default('note') });
 const NotePatch = z.object({ title: z.string().trim().min(1).max(200).optional(), body: z.string().max(200_000).optional() });
 const MEMORY_KIND = z.enum(['profile', 'preference', 'project', 'person', 'fact']);
 const MemoryBody = z.object({ text: z.string().trim().min(2).max(500), kind: MEMORY_KIND.optional(), project: z.string().trim().max(80).optional() });
@@ -140,7 +141,31 @@ export function agentRouter(deps: Deps): Router {
   r.delete('/agent/memories', (req, res) => res.json({ deleted: st.clearMemories(owner(req)) }));
 
   // ---- notes
-  r.get('/agent/notes', (req, res) => res.json({ notes: st.listNotes(owner(req), String(req.query.q ?? ''), 200) }));
+  // list: each note with a short plain-text preview; ?full=0 leaves the bodies out (the Notes screen), ?kind=page|note filters
+  r.get('/agent/notes', (req, res) => {
+    const kind = req.query.kind === 'page' || req.query.kind === 'note' ? req.query.kind : undefined;
+    const full = req.query.full !== '0';
+    const notes = st.listNotes(owner(req), String(req.query.q ?? '').slice(0, 200), 200, kind);
+    res.json({ notes: notes.map((n) => ({ ...(full ? n : { ...n, body: '', prevBody: '' }), preview: notePreview(n), hasPrevious: !!n.prevBody })) });
+  });
+  // a fresh one-hour link that opens a page (or a note as plain text) without the user's sign-in
+  r.get('/agent/notes/:id/link', (req, res) => {
+    const o = owner(req);
+    const n = st.getNote(o, idParam(req));
+    if (!n) throw new AppError('not_found', 'Note not found.');
+    // ?days=N makes a link to share (up to 30 days); the app's own view asks for an hour each time
+    const days = Math.min(30, Math.max(0, Number(req.query.days) || 0));
+    const ttl = days ? Math.round(days * 86400) : 3600;
+    const path = new URL(pageLink('http://x', o, n.id, ttl)).pathname;
+    const base = (deps.config.agent.publicUrl || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+    res.json({ path, url: `${base}${path}`, expiresInSec: ttl });
+  });
+  // swaps the body with the one before the last change (Restore previous version; pressing it again redoes)
+  r.post('/agent/notes/:id/restore', (req, res) => {
+    const n = st.restoreNote(owner(req), idParam(req));
+    if (!n) throw new AppError('not_found', 'There is no earlier version to restore.');
+    res.json({ note: n });
+  });
   r.get('/agent/notes/:id', (req, res) => {
     const n = st.getNote(owner(req), idParam(req));
     if (!n) throw new AppError('not_found', 'Note not found.');
@@ -148,7 +173,7 @@ export function agentRouter(deps: Deps): Router {
   });
   r.post('/agent/notes', (req, res) => {
     const b = parseBody(NoteBody, req.body);
-    res.status(201).json({ note: st.createNote(owner(req), b.title, b.body, 'app') });
+    res.status(201).json({ note: st.createNote(owner(req), b.title, b.body, 'app', b.kind) });
   });
   r.post('/agent/notes/:id', (req, res) => {
     const b = parseBody(NotePatch, req.body);

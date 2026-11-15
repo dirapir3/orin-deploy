@@ -48,9 +48,14 @@ export interface Note {
   title: string;
   body: string;
   source: string;
+  /** 'note' = Markdown, 'page' = an HTML page (opened in its own sandboxed view) */
+  kind: NoteKind;
+  /** the body before the last change (one step of undo), '' when none */
+  prevBody: string;
   createdAt: number;
   updatedAt: number;
 }
+export type NoteKind = 'note' | 'page';
 export interface Reminder {
   id: string;
   owner: string;
@@ -252,7 +257,7 @@ function sameFact(a: string, b: string): boolean {
   for (const w of x) if (y.has(w)) both++;
   return both / (x.size + y.size - both) >= 0.8;
 }
-const toNote = (r: Row): Note => ({ id: s(r.id), owner: s(r.owner), title: s(r.title), body: s(r.body), source: s(r.source), createdAt: n(r.created_at), updatedAt: n(r.updated_at) });
+const toNote = (r: Row): Note => ({ id: s(r.id), owner: s(r.owner), title: s(r.title), body: s(r.body), source: s(r.source), kind: s(r.kind) === 'page' ? 'page' : 'note', prevBody: s(r.prev_body), createdAt: n(r.created_at), updatedAt: n(r.updated_at) });
 const toVault = (r: Row): VaultRow => ({ id: s(r.id), owner: s(r.owner), name: s(r.name), domain: s(r.domain), usernameEnc: s(r.username_enc), passwordEnc: s(r.password_enc), notesEnc: s(r.notes_enc), createdAt: n(r.created_at), updatedAt: n(r.updated_at) });
 const toPrompt = (r: Row): PromptRec => {
   const meta = parseJson<PromptMeta>(r.meta ?? '{}', {});
@@ -335,6 +340,10 @@ export class AgentStore {
     ] as const) {
       if (!memCols.includes(col)) this.db.exec(`ALTER TABLE memories ADD COLUMN ${col} ${def}`);
     }
+    // added with Notes & pages: a note's kind (Markdown note or HTML page) and the body before the last change
+    const noteCols = this.all('PRAGMA table_info(notes)').map((c) => s(c.name));
+    if (!noteCols.includes('kind')) this.db.exec("ALTER TABLE notes ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'");
+    if (!noteCols.includes('prev_body')) this.db.exec("ALTER TABLE notes ADD COLUMN prev_body TEXT NOT NULL DEFAULT ''");
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS memory_episodes (id TEXT PRIMARY KEY, owner TEXT NOT NULL, conversation_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'chat', turns INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (owner, conversation_id)); CREATE INDEX IF NOT EXISTS memory_episodes_owner ON memory_episodes(owner, updated_at);",
     );
@@ -476,10 +485,10 @@ export class AgentStore {
   }
 
   // ---- notes
-  createNote(owner: string, title: string, body: string, source = 'chat'): Note {
+  createNote(owner: string, title: string, body: string, source = 'chat', kind: NoteKind = 'note'): Note {
     const now = Date.now();
-    const note: Note = { id: randomUUID(), owner, title: title.slice(0, 200), body, source, createdAt: now, updatedAt: now };
-    this.run('INSERT INTO notes (id, owner, title, body, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)', note.id, owner, note.title, body, source, now, now);
+    const note: Note = { id: randomUUID(), owner, title: title.slice(0, 200), body, source, kind, prevBody: '', createdAt: now, updatedAt: now };
+    this.run('INSERT INTO notes (id, owner, title, body, source, kind, prev_body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', note.id, owner, note.title, body, source, kind, '', now, now);
     return note;
   }
   updateNote(owner: string, id: string, patch: { title?: string; body?: string; append?: string }): Note | null {
@@ -487,9 +496,19 @@ export class AgentStore {
     if (!cur) return null;
     const title = (patch.title ?? cur.title).slice(0, 200);
     const body = patch.body !== undefined ? patch.body : patch.append ? `${cur.body}\n\n${patch.append}` : cur.body;
+    // the body before this change stays one step back (Restore previous version), a rename alone keeps it
+    const prevBody = body !== cur.body ? cur.body : cur.prevBody;
     const now = Date.now();
-    this.run('UPDATE notes SET title = ?, body = ?, updated_at = ? WHERE owner = ? AND id = ?', title, body, now, owner, id);
-    return { ...cur, title, body, updatedAt: now };
+    this.run('UPDATE notes SET title = ?, body = ?, prev_body = ?, updated_at = ? WHERE owner = ? AND id = ?', title, body, prevBody, now, owner, id);
+    return { ...cur, title, body, prevBody, updatedAt: now };
+  }
+  /** Swaps the body with the one before the last change (pressing it again redoes). */
+  restoreNote(owner: string, id: string): Note | null {
+    const cur = this.getNote(owner, id);
+    if (!cur || !cur.prevBody) return null;
+    const now = Date.now();
+    this.run('UPDATE notes SET body = ?, prev_body = ?, updated_at = ? WHERE owner = ? AND id = ?', cur.prevBody, cur.body, now, owner, id);
+    return { ...cur, body: cur.prevBody, prevBody: cur.body, updatedAt: now };
   }
   getNote(owner: string, id: string): Note | null {
     const r = this.get('SELECT * FROM notes WHERE owner = ? AND id = ?', owner, id);
@@ -499,12 +518,14 @@ export class AgentStore {
     const r = this.get('SELECT * FROM notes WHERE owner = ? AND lower(title) = lower(?) ORDER BY updated_at DESC LIMIT 1', owner, title);
     return r ? toNote(r) : null;
   }
-  listNotes(owner: string, query = '', limit = 100): Note[] {
+  listNotes(owner: string, query = '', limit = 100, kind?: NoteKind): Note[] {
+    const k = kind ? ' AND kind = ?' : '';
+    const kp = kind ? [kind] : [];
     if (query) {
       const q = `%${query.toLowerCase()}%`;
-      return this.all('SELECT * FROM notes WHERE owner = ? AND (lower(title) LIKE ? OR lower(body) LIKE ?) ORDER BY updated_at DESC LIMIT ?', owner, q, q, limit).map(toNote);
+      return this.all(`SELECT * FROM notes WHERE owner = ? AND (lower(title) LIKE ? OR lower(body) LIKE ?)${k} ORDER BY updated_at DESC LIMIT ?`, owner, q, q, ...kp, limit).map(toNote);
     }
-    return this.all('SELECT * FROM notes WHERE owner = ? ORDER BY updated_at DESC LIMIT ?', owner, limit).map(toNote);
+    return this.all(`SELECT * FROM notes WHERE owner = ?${k} ORDER BY updated_at DESC LIMIT ?`, owner, ...kp, limit).map(toNote);
   }
   deleteNote(owner: string, id: string): boolean {
     return this.run('DELETE FROM notes WHERE owner = ? AND id = ?', owner, id) > 0;
