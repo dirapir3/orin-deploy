@@ -41,7 +41,7 @@ export const createTaskTool = defineTool({
 export const deepResearchTool = defineTool({
   name: 'deep_research',
   description:
-    'Run deep research in the background: several web searches, reading the best sources, and a written Markdown report with citations saved as a note. Use for questions that need a thorough, sourced answer. Tell the user it has started and that they will be notified.',
+    'Run deep research in the background: several web searches, reading the best sources, and a report written up as a page (numbered citations linked to a sources list) that arrives in this chat as a card with the key findings. Use for questions that need a thorough, sourced answer. Tell the user it has started and that they will be notified.',
   schema: z.object({
     question: z.string().min(5).max(1000),
     depth: z.enum(['quick', 'standard', 'thorough']).optional().describe('quick: ~3 sources, standard: ~6, thorough: ~10'),
@@ -52,7 +52,7 @@ export const deepResearchTool = defineTool({
   handler: async (a, ctx) => {
     const t = ctx.services.store.createTask(ctx.owner, 'deep_research', `Research: ${a.question.slice(0, 100)}`, { question: a.question, depth: a.depth ?? 'standard', timezone: ctx.timezone, conversationId: ctx.conversationId });
     enqueue(ctx.services, t.id);
-    return { content: `Deep research started (task id ${t.id}). A report note will be saved and the user notified when it finishes (usually 1–3 minutes).`, summary: 'Research started', display: { kind: 'task', id: t.id, title: t.title, status: t.status } };
+    return { content: `Deep research started (task id ${t.id}). When it finishes (usually 1–3 minutes) the key findings and a card that opens the full page arrive in this chat on their own. Tell the user that in one short line; do not wait for it.`, summary: 'Research started', display: { kind: 'task', id: t.id, title: t.title, status: t.status } };
   },
 });
 

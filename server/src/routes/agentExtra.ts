@@ -10,6 +10,7 @@ import { agentOwnerKey, agentOwners, requesterKey } from '../middleware/auth.js'
 import { chatRuns } from '../agent/chatRuns.js';
 import { carryOn } from '../agent/runJournal.js';
 import { parseBody } from './util.js';
+import { notePreview } from '../agent/pages.js';
 import { CHARACTERS } from '../agent/persona.js';
 import { saveLogin, toPublic, updateLogin, signToken } from '../agent/vault.js';
 import { deleteWsFile, listFiles, MAX_WORKSPACE_BYTES, usedBytes, wipeWorkspace, workspaceDir, writeWsFile } from '../agent/workspace.js';
@@ -190,7 +191,7 @@ export function agentExtraRouter(deps: Deps): Router {
     const o = owner(req);
     st.expirePrompts();
     res.json({
-      items: st.listInbox(o, Number(req.query.since) || 0, 100),
+      items: st.listInbox(o, Number(req.query.since) || 0, 100).map((x) => withCard(o, x)),
       prompts: st.listPrompts(o, 'pending', 20),
       running: st.listTasks(o, { status: 'queued,running', limit: 50 }).length,
       now: Date.now(),
@@ -207,6 +208,15 @@ export function agentExtraRouter(deps: Deps): Router {
     if (!taskId) return null;
     const c = st.getTaskById(taskId)?.input.conversationId;
     return typeof c === 'string' ? c : null;
+  };
+
+  /** A task result that made a note or page (deep research) carries a card for it, shown under the result in chat. */
+  const withCard = <T extends { kind: string; refId: string | null; owner?: string }>(o: string, x: T) => {
+    if (!x.refId || !x.kind.startsWith('task_')) return x;
+    const t = st.getTaskById(x.refId);
+    const n = t?.noteId ? st.getNote(o, t.noteId) : null;
+    if (!n) return x;
+    return { ...x, card: { kind: 'note', id: n.id, title: n.title, format: n.kind === 'page' ? 'page' : 'note', preview: notePreview(n) } };
   };
 
   // Everything on the Agent page for all four agents in one request.
@@ -314,7 +324,7 @@ export function agentExtraRouter(deps: Deps): Router {
     let running = 0;
     agentOwners(acc).forEach((o, i) => {
       const id = CHARACTERS[i]!.id;
-      for (const x of st.listInbox(o, since, 100)) items.push({ ...x, owner: undefined, agent: id, conversationId: conversationOf(x.kind, x.refId) });
+      for (const x of st.listInbox(o, since, 100)) items.push({ ...withCard(o, x), owner: undefined, agent: id, conversationId: conversationOf(x.kind, x.refId) });
       for (const p of st.listPrompts(o, 'pending', 20)) prompts.push({ ...p, owner: undefined, agent: id });
       running += st.listTasks(o, { status: 'queued,running', limit: 50 }).length + chatRuns.active(o);
     });
@@ -328,7 +338,7 @@ export function agentExtraRouter(deps: Deps): Router {
   });
 
   // ---- inbox: messages from the agent to the user's chat
-  r.get('/agent/inbox', (req, res) => res.json({ items: st.listInbox(owner(req), Number(req.query.since) || 0, 100), now: Date.now() }));
+  r.get('/agent/inbox', (req, res) => res.json({ items: st.listInbox(owner(req), Number(req.query.since) || 0, 100).map((x) => withCard(owner(req), x)), now: Date.now() }));
 
   // ---- workspace files (artifacts)
   r.get('/agent/files', (req, res) => {

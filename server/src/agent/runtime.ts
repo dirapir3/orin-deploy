@@ -1,3 +1,4 @@
+import { researchPageHtml, reportSummary } from './researchPage.js';
 import { knowHowFor } from './knowledge.js';
 import { getMemorySettings, MEMORY_TOOLS, memoryContext } from './memory.js';
 import { isQuietResult } from './powers.js';
@@ -330,7 +331,8 @@ export class AgentRuntime {
       if (task.kind === 'deep_research') {
         const { report, noteId, summary } = await this.deepResearch(task, ctrl.signal);
         this.store.finishTask(task.id, 'done', { result: `${summary}\n\n${report}`.trim(), noteId });
-        this.store.addInbox(task.owner, 'task_done', task.title, `${summary}\n\n${report}`.trim(), task.id);
+        // chat gets the short version and a card that opens the page (see the inbox routes' card field)
+        this.store.addInbox(task.owner, 'task_done', task.title, summary, task.id);
       } else {
         let prompt = String(task.input.prompt ?? '');
         if (task.kind === 'skill') {
@@ -579,8 +581,14 @@ export class AgentRuntime {
     );
     if (!report) throw new Error('The model returned an empty report.');
     const full = `${report}\n\n## Sources\n${sources.map((s) => `${s.n}. [${s.title.replace(/[[\]]/g, '')}](${s.url})`).join('\n')}\n`;
-    const note = this.store.createNote(task.owner, `Research: ${question.slice(0, 120)}`, full, 'research');
-    const summary = `Report saved to Notes as "${note.title}" (${sources.length} sources).`;
+    // Written up as a page (Sesame-style): numbered citations that jump to the sources, in the Sky/Ink look.
+    // The page card arrives under the result in chat; the full Markdown stays on the task.
+    ev('write', 'Making the page');
+    const titleLine = /^#\s+(.+)$/m.exec(report)?.[1]?.trim();
+    const pageTitle = (titleLine && titleLine.length <= 120 ? titleLine : `Research: ${question}`).slice(0, 160);
+    const note = this.store.createNote(task.owner, pageTitle, researchPageHtml({ question, report, sources }), 'research', 'page');
+    const bullets = reportSummary(report);
+    const summary = `${bullets ? `${bullets}\n\n` : ''}The full report, with ${sources.length} cited source${sources.length === 1 ? '' : 's'}, is on the page "${note.title}".`;
     return { report: full, noteId: note.id, summary };
   }
 }

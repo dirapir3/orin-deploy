@@ -22,14 +22,30 @@ export function pollinationsImageUrl(base: string, prompt: string, w: number, h:
 }
 
 async function viaPollinations(svc: AgentServices, ctx: ToolContext, prompt: string, w: number, h: number): Promise<ImageOut> {
-  const seed = Math.floor(Math.random() * 1_000_000);
-  const url = pollinationsImageUrl(svc.config.chat.pollinations.imageUrl, prompt, w, h, seed);
-  // Generate it now (it is cached by URL), so the phone loads it instantly and we know it worked.
-  const res = await svc.fetchImpl(url, { signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(90_000)]) });
-  const ct = res.headers.get('content-type') ?? '';
-  if (!res.ok || !ct.startsWith('image/')) throw new Error(`Pollinations returned HTTP ${res.status} (${ct || 'no content type'})`);
-  await res.arrayBuffer();
-  return { url, provider: 'Pollinations (free)' };
+  // The free service is busy now and then (429 / 5xx / a timeout): two more tries with a short wait and a new seed.
+  let last: Error | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, attempt * 2500));
+    if (ctx.signal.aborted) break;
+    const seed = Math.floor(Math.random() * 1_000_000);
+    const url = pollinationsImageUrl(svc.config.chat.pollinations.imageUrl, prompt, w, h, seed);
+    try {
+      // Generate it now (it is cached by URL), so the phone loads it instantly and we know it worked.
+      const res = await svc.fetchImpl(url, { signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(75_000)]) });
+      const ct = res.headers.get('content-type') ?? '';
+      if (!res.ok || !ct.startsWith('image/')) {
+        last = new Error(`Pollinations returned HTTP ${res.status} (${ct || 'no content type'})`);
+        if (res.status >= 400 && res.status < 500 && res.status !== 429 && res.status !== 408) break; // a refused prompt will not change
+        continue;
+      }
+      await res.arrayBuffer();
+      return { url, provider: 'Pollinations (free)' };
+    } catch (e) {
+      if (ctx.signal.aborted) throw e;
+      last = e as Error;
+    }
+  }
+  throw last ?? new Error('Pollinations did not answer');
 }
 
 async function viaGemini(svc: AgentServices, ctx: ToolContext, prompt: string): Promise<ImageOut> {
