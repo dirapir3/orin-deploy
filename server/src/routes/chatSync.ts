@@ -97,7 +97,7 @@ function load(path: string): ChatFile {
 
 function save(path: string, f: ChatFile) {
   mkdirSync(join(path, '..'), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}`;
+  const tmp = `${path}.${process.pid}.tmp`; // ends in .tmp: durable storage skips it
   writeFileSync(tmp, JSON.stringify(f));
   renameSync(tmp, path);
 }
