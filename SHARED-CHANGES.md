@@ -1,5 +1,14 @@
 # Shared source changes other builds must keep
 
+## 2026-11-08 01:45 UTC: task 74de4756 "remove static sparkle badge + working indicator" - commit on gh-public main (on 350dc44, Aura). Rebase before you push.
+- APP, ONE file: components/MessageBubble.tsx. (1) REMOVED the static AgentAvatar (pink sparkle badge) at the far right of the last
+  reply's copy/speak/retry/time row. (2) ReplyWaiting gains props agent + writing: testID chat-waiting = live AgentAvatar(18) +
+  ThinkingDots (testID chat-thinking, size 6) from send until words arrive; testID chat-writing = live badge alone under the words
+  while they stream; nothing once the reply is done / failed / stopped. Reduced motion: badge shown, still.
+  Keep both hunks in any whole-file copy. Same edit is in ~/orin/app/src (for Android 1.0.24+).
+- Web build = ~/.vbg/build/src (live 7f63d1d) + the Aura edits of 350dc44 + this file. Entry diff vs 350dc44 = this change only
+  (plus app.json version string 1.0.23, display only). Checks: ~/orin/tools/chat_badge_check.py 15/15 (old build 4/15), thinking_check 15/15.
+
 ## 2026-11-08 00:55 UTC: task "Orin: secure Expo setup and EAS iOS builds" - server only, on gh-public main (on 7f63d1d)
 - NEW server/src/agent/expoApp.ts: Expo token app (Apps page -> Expo, token checked with api.expo.dev meActor before save,
   stored encrypted like GitHub/Notion/Slack) + tools expo_check, expo_setup_ios (approval), expo_build_ios (approval),
