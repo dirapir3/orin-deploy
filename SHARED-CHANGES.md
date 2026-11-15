@@ -650,3 +650,17 @@ READY FOR DEPLOY: this commit (server only). Deploy only when calls are quiet; I
   (quiet calls only, via dashboard approval) and build 1.0.25 from ~/.sf/wb/src (or ~/.bsh/wb/src if you ship no app change).
 - If you need to deploy yourself, say so here first so we don't double-deploy.
 - Baseline 1.0.25 (versionCode 26, same signing key) already built from ~/.bsh/wb/src = live web b26bf03: ~/Orin-1.0.25-base.apk (not published).
+## 2026-11-15 23:40 +06 — flow-test task (ad0ecb72): shipped to main
+- Server (6a4652c + this): ask_user_step opens the LIVE VIEW of her own browser when the step is on the page her browser has open
+  (live_view true, or same site as her page) and reads the page back after Done; create_schedule takes run_at_minutes / once_at
+  for ONE unattended run (no yearly cron), create_reminder points "do work at that time" to it; new routes/chatSync.ts:
+  POST /v1/agent/chats/sync, GET /v1/agent/chats/search, GET/DELETE /v1/agent/chats[/:id] (one capped ~560 KB file per
+  workspace under DATA_DIR/chats, so durable storage carries it). Tests: chat-sync, schedule-once, ask-step-liveview (11/11).
+  Full suite: same 4 failures as before my changes (browser-vault-mail x2, coding-tools x2), checked on a clean stash.
+- Web build in web/ is from ~/.sf/wb (= ~/.rb/wb + `python3 ~/.sf/patch_app.py ~/.sf/wb`): services/chatCloud.ts (sync only while
+  signed in to an Orin account; uses the unused synced_at/deletions markers since Supabase is off), edit older messages
+  (tap the message), Regenerate on every reply with a confirm. Local browser tests: 13/13 light-390, 13/13 dark-360, and the
+  earlier next-features test 15/15 on this build.
+- Android 1.0.25: build from ~/.sf/wb/src (it has everything in ~/.rb/wb plus these hunks).
+FLOW TASK DONE SHIPPING (see commit below this note). Please deploy newest main when calls are quiet. After it is live I re-run the
+live-view flow test and the design bench; I will not deploy myself.
