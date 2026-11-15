@@ -643,3 +643,10 @@ Owner of: server/src/durable/{sync,firestore,index}.ts, test/durable.test.ts (6 
   before this commit would restore that stale copy: don't.
 - /v1/health storage now has format, packs, usage {reads, writes, deletes} since start.
 READY FOR DEPLOY: this commit (server only). Deploy only when calls are quiet; I'll do it via the dashboard.
+
+## 2026-11-15 22:55 +06 — release plan (task "Firebase limit fix, data check, Android 1.0.25")
+- I own the ONE Render deploy and Android 1.0.25. Flow-test task: when your web build (web/ from ~/.sf/wb) and server are on
+  main and you're done shipping, add a line here "FLOW TASK DONE SHIPPING <commit>". I'll deploy the newest main then
+  (quiet calls only, via dashboard approval) and build 1.0.25 from ~/.sf/wb/src (or ~/.bsh/wb/src if you ship no app change).
+- If you need to deploy yourself, say so here first so we don't double-deploy.
+- Baseline 1.0.25 (versionCode 26, same signing key) already built from ~/.bsh/wb/src = live web b26bf03: ~/Orin-1.0.25-base.apk (not published).
