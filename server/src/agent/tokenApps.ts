@@ -361,9 +361,9 @@ export const TOKEN_APPS: TokenAppSpec[] = [
   {
     id: 'github',
     name: 'GitHub',
-    description: 'Repos, files, issues and pull requests; opening issues and commenting ask you first.',
+    description: 'Repos, files, issues and pull requests. Orin can push her code and open pull requests; pushing, opening issues or PRs and commenting ask you first.',
     tokenLabel: 'Personal access token',
-    tokenHelp: 'GitHub → Settings → Developer settings → Personal access tokens. Fine-grained, with access to the repos you want (Contents and Issues: read, or read and write to let Orin open issues).',
+    tokenHelp: 'GitHub → Settings → Developer settings → Personal access tokens. Fine-grained, with access to the repos you want. To let Orin push code and open pull requests: Contents, Pull requests and Issues set to read and write (and Administration: read and write if she should create new repos). Read-only is enough to just browse.',
     tokenUrl: 'https://github.com/settings/personal-access-tokens/new',
     verify: async (svc, token, signal) => (await gh<{ login: string }>(svc, token, '/user', signal)).login,
   },

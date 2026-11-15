@@ -49,6 +49,23 @@ export const CAPABILITY_NAMES: Record<string, string> = {
  * Owns the agent's state and background machinery: tool registry, SQLite store, job queue worker
  * and the cron scheduler.
  */
+/** A task result longer than this goes into a note; chat gets the opening and the note's card. */
+export const LONG_RESULT_CHARS = 1600;
+
+/** The opening of a long result for chat: whole paragraphs up to about 600 characters, and a pointer to the note. */
+export function shortResult(text: string): string {
+  const paras = text.trim().split(/\n{2,}/);
+  let out = '';
+  for (const p of paras) {
+    if (/^#{1,4}\s/.test(p.trim()) && out) break;
+    if ((out + p).length > 600 && out) break;
+    out += (out ? '\n\n' : '') + p.trim();
+    if (out.length > 600) break;
+  }
+  if (out.length > 700) out = `${out.slice(0, 680).replace(/\s+\S*$/, '')}…`;
+  return `${out.replace(/^#+\s*/, '')}\n\nThe full write-up is in the note below.`;
+}
+
 export class AgentRuntime {
   readonly store: AgentStore;
   readonly tools: ToolRegistry;
@@ -340,20 +357,26 @@ export class AgentRuntime {
           if (!skill) throw new Error('The skill no longer exists.');
           prompt = `Run the skill "${skill.name}".\n\nInstructions:\n${skill.instructions}${task.input.extra ? `\n\nExtra context: ${String(task.input.extra)}` : ''}`;
         }
-        const { text, handedOff } = await this.runAgentTask(task, prompt, tz, ctrl.signal);
+        const { text, handedOff, noteId: madeNote } = await this.runAgentTask(task, prompt, tz, ctrl.signal);
         if (handedOff) {
           // the next part picks up from here and brings the result to the user
           this.store.finishTask(task.id, 'done', { result: text });
           this.store.addTaskEvent(task.id, 'done', 'Carrying on in the next part');
           return;
         }
-        let noteId: string | null = null;
+        let noteId: string | null = madeNote;
         if (task.input.saveAsNote && text.trim()) noteId = this.store.createNote(task.owner, task.title, text, 'task').id;
         // a scheduled check-in with nothing to report stays in Activity and never reaches the chat;
         // a teammate's part goes back to the agent that asked for it, not to the user
         const quiet = !!task.scheduleId && isQuietResult(text);
+        // Sesame flow: chat gets a short result and a card; a long write-up goes into a note the card opens
+        let chatText = text;
+        if (!quiet && !task.input.teamFrom && !noteId && text.length > LONG_RESULT_CHARS) {
+          noteId = this.store.createNote(task.owner, task.title, text, 'task').id;
+          chatText = shortResult(text);
+        }
         this.store.finishTask(task.id, 'done', { result: quiet ? 'Nothing needed you.' : text, noteId });
-        if (!quiet && !task.input.teamFrom) this.store.addInbox(task.owner, task.scheduleId ? 'schedule_done' : 'task_done', task.title, text, task.id);
+        if (!quiet && !task.input.teamFrom) this.store.addInbox(task.owner, task.scheduleId ? 'schedule_done' : 'task_done', task.title, chatText, task.id);
         if (quiet) {
           this.store.addTaskEvent(task.id, 'done', 'Nothing to report');
           return;
@@ -420,7 +443,7 @@ export class AgentRuntime {
       : "Still going in the background. I'll post the result here when it's done.";
   }
 
-  private async runAgentTask(task: Task, prompt: string, tz: string | undefined, signal: AbortSignal): Promise<{ text: string; handedOff: boolean }> {
+  private async runAgentTask(task: Task, prompt: string, tz: string | undefined, signal: AbortSignal): Promise<{ text: string; handedOff: boolean; noteId: string | null }> {
     const provider = this.providerFor(task.owner)!;
     const appsOff = this.store.appsOff(task.owner);
     // long-term memory (agent/memory.ts): the facts and earlier conversations that fit this task, unless memory is off
@@ -497,7 +520,9 @@ export class AgentRuntime {
     }
     if (!res.text.trim()) throw new Error('The model returned an empty result.');
     // The result is what the user reads: the final answer, not the narration between tool calls.
-    return { text: (res.reply || res.text).trim(), handedOff: !!res.handedOff };
+    // the note or page this task made last is the card under its result in chat
+    const made = [...(res.displays ?? [])].reverse().find((d) => d && (d as { kind?: string }).kind === 'note' && typeof (d as { id?: unknown }).id === 'string') as { id: string } | undefined;
+    return { text: (res.reply || res.text).trim(), handedOff: !!res.handedOff, noteId: made?.id ?? null };
   }
 
   private async complete(messages: ProviderMessage[], signal: AbortSignal, model: string, maxOutputTokens = 1500): Promise<string> {
