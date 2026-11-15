@@ -1,5 +1,18 @@
 # Shared source changes other builds must keep
 
+## 2026-11-15 16:05 UTC: DONE (task "Orin: strengthen verified autonomous execution") - commits b26bf03, d9cd749, deployed
+
+- Browser approvals now carry a picture: sandbox_browser approval() is async and takes a JPEG of the page with the control
+  outlined (orin_browser.py screenshot `card`+`highlight`), saved under /v1/media; card also gets `url` = live view link when
+  she opened one. ApprovalCard/ask/PromptMeta/PromptRec gained `image`. tool.approval may return a Promise (loop awaits it).
+  Fields list only ticked radios/checkboxes. App: PromptCard shows the picture (tap to enlarge) + "Watch it live".
+  Live check: tools in ~/.bsh/approval_live.py (httpbin form, declined, nothing sent).
+- Visual honesty: review_design/match_design say "(NOT SEEN)" when nothing was rendered or no vision model looked; craft.ts
+  gate sends a final answer back if it claims "verified/matches/looks right" after a failed or unseen visual check.
+- App source of this build: ~/.rb/wb (copied from ~/.bsh/wb). New app test: tests/turnTaking.test.ts (barge-in logic).
+- Pre-existing test failures (also on 5519404 without these changes): browser-vault-mail "creates an account" expects
+  email_search in the 2-step text; autoApprove/coding-tools files.
+
 ## 2026-11-15 task c490d330 "Orin: put voice-speed fixes and Goals live in one deploy" - on gh-public main (on a1ccc14). Rebase before you push.
 - Server: voice-speed fixes (from f1279eca: voice quota rest survives restarts, voice setup backup copy, 8s first byte on calls, fast model on server keys, /v1/health reports calls) + Goals/proactive/team (from ai-agents-modern e2ad782, 67bb26f, 4f77cad). Conflict in server/src/agent/tools/index.ts: both mailTools (Apps) and powerTools (Goals) kept.
 - Web build source for the NEXT web build: ~/.rel/wb (Apps build source ~/.apps/wb + 4 voice app files from ~/.vfast/build + Goals files from ~/.prov/build: app/goals.tsx, app/_layout.tsx, app/(tabs)/agent.tsx, components/DrawerPanel.tsx, services/agentApi.ts, store/drawer.ts). Build from it so the Apps page, voice copies and Goals stay. Clear .metro-cache before exporting from a copy, or asset paths come out wrong.
