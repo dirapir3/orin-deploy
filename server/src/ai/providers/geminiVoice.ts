@@ -230,6 +230,29 @@ export class GeminiVoiceProvider implements VoiceProvider {
     return soonest <= now ? 0 : soonest;
   }
 
+  /**
+   * Which keys + models a remembered rest belongs to: a rest written down before a restart only applies
+   * while the server still has the same Gemini keys and voice models (new keys = try again at once).
+   */
+  restScope(kind: 'tts' | 'stt'): string {
+    const models = kind === 'tts' ? this.ttsModels : this.sttModels;
+    return `${kind}|${[...this.o.keys.filter(Boolean)].map(keyId).sort().join(',')}|${models.join(',')}`;
+  }
+
+  /**
+   * Puts back a rest remembered from before a restart (ai/voiceRest.ts): every key + model of this kind is
+   * skipped until `until`, so the first call after a restart goes straight to the phone voice instead of
+   * walking three out-of-quota models (about 4.7 s on the live server).
+   */
+  seedRest(kind: 'tts' | 'stt', until: number): void {
+    if (!(until > Date.now())) return;
+    const models = kind === 'tts' ? this.ttsModels : this.sttModels;
+    for (const m of models) for (const k of this.o.keys.filter(Boolean)) {
+      const pk = this.pairKey(k, m);
+      if ((this.pairCooling.get(pk) ?? 0) < until) this.pairCooling.set(pk, until);
+    }
+  }
+
   /** The (model, key) pairs worth trying now, in order; throws at once when all of them are resting. */
   private candidates(models: string[], what: string): { model: string; key: string }[] {
     const keys = this.o.keys.filter(Boolean);

@@ -113,6 +113,10 @@ export interface VoiceProvider {
   speakStream?(req: SpeechRequest): Promise<import('./providers/geminiVoice.js').SpeechStream>;
   /** Epoch ms until which every TTS/STT model is resting after its quota ran out (0 = available). */
   restingUntil?(kind: 'tts' | 'stt'): number;
+  /** Which keys + models a remembered rest belongs to (ai/voiceRest.ts). Optional. */
+  restScope?(kind: 'tts' | 'stt'): string;
+  /** Puts back a rest remembered from before a restart (ai/voiceRest.ts). Optional. */
+  seedRest?(kind: 'tts' | 'stt', until: number): void;
   /** The provider attempts behind the last call (model;status;ms), for Server-Timing. */
   lastTrace?: string[];
 }

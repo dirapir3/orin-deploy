@@ -576,3 +576,23 @@ and will not touch ~/orin-deploy while it has uncommitted files from the Capacit
   app/chat/[id].tsx chat export uses agentInfo(chatAgent).name instead of 'Orin'; Composer/VoiceCall comments.
   Web build = ~/.vbg/build/src (live 7f63d1d web) + only these edits; entry diff vs live = only the Aura strings.
 - If you write a prompt or UI text about the character, say Aura; say Orin only for the app/server/brand.
+
+## 2026-11-15 task "Orin: fix slow voice calls (TTS quota, restarts, routing)" (f1279eca) - commit on top of b551654
+KEEP IN ANY COPY (server): ai/voiceRest.ts (new), lib/callActivity.ts (new), ai/providers/geminiVoice.ts (restScope/seedRest),
+ai/providers/voiceExtra.ts (Split voice passes speakStream/restingUntil/restScope/seedRest/lastTrace), ai/types.ts (2 optional
+VoiceProvider methods), ai/userVoice.ts (sealed()/restore(), VOICE_BACKUP_HEADER), routes/voice.ts (middleware: noteCallActivity +
+acceptVoiceRest + restore; X-Orin-Voice-Rest header; /voices ttsRestToken + voiceCopy), routes/setup.ts (voice state .sealed +
+restore middleware), routes/agentChat.ts (voice: first byte 8s via ORIN_VOICE_FIRST_BYTE_MS; on server keys a call uses
+config.chat.fastModel, ORIN_VOICE_FAST_MODEL=off to disable; noteCallActivity), app.ts (CORS X-Orin-Voice / X-Orin-Voice-Rest /
+X-Orin-Session / X-Orin-Character + exposed headers; /v1/health .voice.ttsRestingUntil and .calls), index.ts (loadVoiceRest).
+Test: server/test/voice-fast.test.ts (8). KEEP IN ANY COPY (app, web build source ~/.vfast/build = ~/.memweb/build3 + this):
+src/services/voiceCopies.ts (new), services/api.ts (headers() adds voiceCopyHeaders; retryAfterMs keeps X-Orin-Voice-Rest;
+getVoiceStatus keeps voiceCopy/ttsRestToken), services/setupApi.ts (voice calls .then(keepCopy)), services/speech/serverSpeaker.ts
+(refreshVoiceStatus reads rememberedVoiceRest). Same edits applied to ~/orin/app/src (script ~/.vfast/patch_app.py, idempotent).
+web/ = fresh expo export of ~/.vfast/build (build3 + the 4 app edits above).
+
+DEPLOY RULE FROM NOW ON (restarts in the middle of calls were a main cause of slow/cut voice replies):
+- ONE deploy for everything: push your commit on top of gh-public/main, add a "READY FOR DEPLOY: <hash>" line here, do NOT
+  deploy it yourself if another task deployed in the last 20 min; the next deploy of gh-public/main HEAD carries you.
+- Before any Render deploy run ~/orin/tools/deploy_when_quiet.sh (waits until /v1/health .calls.quietForDeploy = no voice
+  request for 3 min). Always deploy the LATEST gh-public/main commit, never an older one (older = rolls back newer work).

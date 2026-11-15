@@ -158,6 +158,19 @@ export class SplitVoiceProvider implements VoiceProvider {
     private readonly tts: VoiceProvider,
   ) {
     this.id = stt.id === tts.id ? stt.id : `${stt.id}+${tts.id}`;
+    // the speaking side's streaming, rest and trace come through, so a split server voice still streams
+    // and the app still learns when it is out of quota
+    if (tts.speakStream) this.speakStream = tts.speakStream.bind(tts);
+    if (tts.restingUntil || stt.restingUntil) this.restingUntil = (kind) => (kind === 'tts' ? tts : stt).restingUntil?.(kind) ?? 0;
+    if (tts.restScope || stt.restScope) this.restScope = (kind) => (kind === 'tts' ? tts : stt).restScope?.(kind) ?? '';
+    if (tts.seedRest || stt.seedRest) this.seedRest = (kind, until) => (kind === 'tts' ? tts : stt).seedRest?.(kind, until);
+  }
+  speakStream?: VoiceProvider['speakStream'];
+  restingUntil?: (kind: 'tts' | 'stt') => number;
+  restScope?: (kind: 'tts' | 'stt') => string;
+  seedRest?: (kind: 'tts' | 'stt', until: number) => void;
+  get lastTrace() {
+    return this.tts.lastTrace;
   }
   get sttModel() {
     return this.stt.sttModel;

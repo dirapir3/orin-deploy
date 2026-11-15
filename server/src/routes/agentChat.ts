@@ -20,6 +20,7 @@ import { resolveDesignImages } from '../agent/designFiles.js';
 import { amendments, runKey } from '../agent/amendments.js';
 import { alongsideContext, passAlong, saidText, type Alongside } from '../agent/alongside.js';
 import { cancelTaskTool, fillerAck, isFiller, shouldHandOff, VOICE_HANDOFF_AGAIN_NOTE, VOICE_HANDOFF_NOTE, VOICE_WORK_LINES, voiceTools, type VoiceWorkState } from '../agent/voiceWork.js';
+import { noteCallActivity } from '../lib/callActivity.js';
 
 /** A chat reply keeps working on the server when the app goes away, but not forever. */
 const DETACHED_RUN_MS = 50 * 60_000;
@@ -80,6 +81,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
   let along: string | undefined;
   // a call: heavy work runs in the background so the voice lane stays quick (agent/voiceWork.ts)
   const voiceLane = body.mode === 'voice' && !incognito;
+  if (body.mode === 'voice') noteCallActivity();
   const voiceWork: VoiceWorkState = { deferred: [], started: Date.now() };
   let passed: Alongside | undefined;
   try {
@@ -130,8 +132,15 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
     throw err;
   }
   // a model that sends nothing at all for this long is skipped for the next one (work steps may think longer)
-  const fullFirstByteMs = body.mode === 'voice' ? 20_000 : 30_000;
-  const fullModel = ctx.hasImages ? config.chat.visionModel : config.chat.model;
+  // a call fails fast: the user's own model answers in about 1.5 s, and 20 s of silence on the free backup
+  // model (then no answer at all) was the worst turn measured on a call; ORIN_VOICE_FIRST_BYTE_MS overrides
+  const voiceFirstByteMs = Math.max(2_000, Number(process.env.ORIN_VOICE_FIRST_BYTE_MS) || 8_000);
+  const fullFirstByteMs = body.mode === 'voice' ? voiceFirstByteMs : 30_000;
+  // a call on the server's own keys: the spoken reply uses the fast model too (the main free model is the one
+  // that is rate-limited, and heavy work leaves the call for a background task that uses the main model);
+  // with the user's own key (OmniRoute...) its pinned model answers anyway
+  const voiceFast = body.mode === 'voice' && !user && !ctx.hasImages && Boolean(config.chat.fastModel) && process.env.ORIN_VOICE_FAST_MODEL !== 'off';
+  const fullModel = ctx.hasImages ? config.chat.visionModel : voiceFast ? config.chat.fastModel : config.chat.model;
   // quick lane: the fast model answers plain conversation (on the free Gemini tier the main model is often over
   // quota, and walking the fallback chain to reach flash-lite cost 4-10 s a turn); work switches back to fullModel
   const model = lite && !ctx.hasImages && config.chat.fastModel && config.agent.quickLaneFastModel ? config.chat.fastModel : fullModel;
@@ -167,7 +176,7 @@ export async function streamAgentChat(deps: Deps, req: Request, res: Response, b
       messages: ctx.messages,
       tools: runTools,
       escalate: lite && ctx.fullSystem ? { tools, model: fullModel, firstByteMs: fullFirstByteMs, system: () => ctx.fullSystem!(tools.map((t: { name: string }) => t.name)) } : undefined,
-      firstByteMs: lite ? 10_000 : fullFirstByteMs,
+      firstByteMs: lite ? (body.mode === 'voice' ? Math.min(voiceFirstByteMs, 10_000) : 10_000) : fullFirstByteMs,
       ctx: toolCtx,
       maxSteps: body.mode === 'voice' ? Math.min(config.agent.maxSteps, 12) : config.agent.maxSteps,
       fast: body.mode === 'voice',

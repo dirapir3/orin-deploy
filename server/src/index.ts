@@ -3,6 +3,7 @@ import { startKeepWarm } from './lib/keepWarm.js';
 import { AgentRuntime } from './agent/runtime.js';
 import { chatRuns } from './agent/chatRuns.js';
 import { buildProviders } from './ai/registry.js';
+import { loadVoiceRest } from './ai/voiceRest.js';
 import { createApp } from './app.js';
 import { dirname, resolve } from 'node:path';
 import { ensureAdminPassword, ensureVaultKey, readEnvFile, updateEnvFile } from './admin/envFile.js';
@@ -54,6 +55,8 @@ try {
 }
 const agent = new AgentRuntime({ config, provider: providers.agent });
 if (agent.enabled) agent.start();
+// the server voice's daily-quota rest from before this restart (ai/voiceRest.ts)
+loadVoiceRest(config.agent.dataDir, providers.voice);
 
 const app = createApp({
   config,

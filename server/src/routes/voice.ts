@@ -7,7 +7,9 @@ import { AppError, toAppError } from '../errors.js';
 import { SpeechRequestSchema } from '../schemas.js';
 import { parseBody } from './util.js';
 import { ttsStreams } from '../ai/ttsStream.js';
-import { voiceSetups } from '../ai/userVoice.js';
+import { VOICE_BACKUP_HEADER, voiceSetups } from '../ai/userVoice.js';
+import { acceptVoiceRest, noteVoiceRest, VOICE_REST_HEADER } from '../ai/voiceRest.js';
+import { noteCallActivity } from '../lib/callActivity.js';
 import { requesterKey } from '../middleware/auth.js';
 
 const AUDIO_TYPES = new Set([
@@ -47,6 +49,19 @@ export function voiceRouter(deps: Deps) {
   const { providers, usage, config } = deps;
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: config.access.maxAudioBytes, files: 1 } });
 
+  // after a restart: the voice setup and the server voice's quota rest come back from the app's copies
+  // (X-Orin-Voice, X-Orin-Voice-Rest), before the voice is picked for this request
+  r.use((req, _res, next) => {
+    try {
+      noteCallActivity();
+      acceptVoiceRest(providers.voice ?? null, req.header(VOICE_REST_HEADER));
+      if (deps.agent && req.header(VOICE_BACKUP_HEADER)) voiceSetups(deps.agent.store).restore(requesterKey(req), req.header(VOICE_BACKUP_HEADER));
+    } catch {
+      // never in the way of the call
+    }
+    next();
+  });
+
   const requireVoice = () => {
     if (!providers.voice) {
       throw new AppError(
@@ -82,6 +97,10 @@ export function voiceRouter(deps: Deps) {
     const e = err ? toAppError(err) : null;
     const wait = (e?.details as { retryAfterMs?: number } | undefined)?.retryAfterMs;
     if (e?.code === 'provider_rate_limited' && wait && !res.headersSent) res.setHeader('Retry-After', String(Math.ceil(wait / 1000)));
+    // the server voice is out of its daily quota: the app keeps this and sends it back after a restart
+    // (only when this call used the server's own voice: a user's own voice service rests on its own)
+    const rest = v && v === providers.voice ? noteVoiceRest(providers.voice ?? null) : null;
+    if (rest && !res.headersSent) res.setHeader('X-Orin-Voice-Rest', rest);
   };
 
   const pickVoice = (v: NonNullable<typeof providers.voice>, character?: string, picked?: string) => {
@@ -103,7 +122,12 @@ export function voiceRouter(deps: Deps) {
         characterVoices: geminiTts ? Object.fromEntries(Object.entries(CHARACTER_VOICES).map(([k, x]) => [k, x.voice])) : null,
         // the app goes straight to the phone voice while every server voice model is out of quota
         ttsRestingUntil: v.supportsTts && v.restingUntil ? v.restingUntil('tts') || null : null,
+        // the same rest, in the server's own words, for the app to send back after a restart (ai/voiceRest.ts)
+        ttsRestToken: v === providers.voice ? noteVoiceRest(providers.voice ?? null) : null,
         streaming: Boolean(v.supportsTts && v.speakStream),
+        // the app's backup copy of this account's voice setup (only this server can open it), sent back
+        // as X-Orin-Voice so the setup survives a restart that lost the saved data
+        voiceCopy: deps.agent ? voiceSetups(deps.agent.store).sealed(requesterKey(req)) : null,
       });
     } catch (err) {
       next(err);

@@ -36,6 +36,8 @@ import { createAdminRouter, defaultStatusFile } from './admin/router.js';
 import type { AccountService } from './services/supabaseAdmin.js';
 import type { UsageSink } from './services/usage.js';
 import { aiKeysRouter } from './routes/aiKeys.js';
+import { serverVoiceRest } from './ai/voiceRest.js';
+import { callActivity } from './lib/callActivity.js';
 
 export interface Deps {
   config: AppConfig;
@@ -76,9 +78,9 @@ export function createApp(deps: Deps) {
   app.use(
     cors({
       origin: (origin, cb) => cb(null, !origin || config.corsOrigins.includes(origin)),
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Guest-Id', 'X-Orin-Agent', 'X-Orin-AI'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Guest-Id', 'X-Orin-Agent', 'X-Orin-AI', 'X-Orin-Voice', 'X-Orin-Voice-Rest', 'X-Orin-Session', 'X-Orin-Character'],
+      exposedHeaders: ['Retry-After', 'Server-Timing', 'X-Orin-Voice-Rest', 'X-Orin-Voice-Fallback'],
       methods: ['GET', 'POST', 'DELETE', 'PATCH', 'PUT'],
-      exposedHeaders: ['Retry-After', 'X-Orin-Voice-Fallback'],
     }),
   );
   // Separate admin hostname: the admin site and the public app/API never share a host.
@@ -139,7 +141,11 @@ export function createApp(deps: Deps) {
         provider: providers.voice?.id ?? null,
         stt: providers.voice?.sttModel ?? null,
         tts: providers.voice?.supportsTts ? providers.voice.ttsModel : null,
+        // the server voice's daily-quota rest (0 = none): the app goes straight to the phone voice until then
+        ttsRestingUntil: serverVoiceRest(providers.voice ?? null) || null,
       },
+      // voice calls going on now (times only): deploys wait for quietForDeploy (tools/deploy_when_quiet.sh)
+      calls: callActivity(),
       agent: {
         enabled: agent.enabled,
         strongModel: config.chat.model,

@@ -77,6 +77,8 @@ export const VOICE_NEEDS_ADAPTER = ['Azure Speech', 'Google Cloud Speech', 'AWS 
 
 const MARK = 'orin-voice';
 export const DEVICE_VOICE = 'device';
+/** the app's backup copy of the voice setup (VoiceSetups.sealed), sent with voice and setup requests */
+export const VOICE_BACKUP_HEADER = 'x-orin-voice';
 const MODEL_RE = /^[\w.:/@+-]{1,100}$/;
 
 export interface VoiceHealth {
@@ -463,6 +465,72 @@ export class VoiceSetups {
     this.save(account, s);
     const f = this.find(account, ref);
     return this.pub(account, f.row, f.n, s);
+  }
+
+  /**
+   * The app's backup copy of this account's voice setup (like the AI key's sealed copy): every setup with
+   * the key it uses, and which one listens and speaks, encrypted with VAULT_KEY so only this server can
+   * open it. The app sends it back (X-Orin-Voice) and restore() puts the setup back after a restart lost
+   * the saved data (Firestore over its free limit, a wiped disk). null when there is nothing to keep.
+   */
+  sealed(account: string): string | null {
+    try {
+      const rows = this.rows(account);
+      const s = this.settings(account);
+      if (!rows.length && !s.stt && !s.tts) return null;
+      const setups = rows.map(({ row, n }) => ({ n, key: this.creds(account, row, n)?.key ?? revealLogin(row).password }));
+      return encrypt(JSON.stringify({ v: 1, k: 'voice', o: account, setups, stt: s.stt ?? null, tts: s.tts ?? null }));
+    } catch (e) {
+      logger.warn('voice backup copy failed', { err: String(e) });
+      return null;
+    }
+  }
+
+  private restoreChecked = new Map<string, number>();
+
+  /**
+   * Puts the voice setup back from the app's copy, only when the server has no voice setup and no
+   * choice for this account at all (so it never overwrites a newer setup). Never throws.
+   */
+  restore(account: string, sealed: string | undefined): boolean {
+    const raw = (sealed ?? '').trim();
+    if (!raw || raw.length > 20_000) return false;
+    // checked a moment ago: no vault read on every voice request
+    const last = this.restoreChecked.get(account) ?? 0;
+    if (this.now() - last < 60_000) return false;
+    this.restoreChecked.set(account, this.now());
+    if (this.restoreChecked.size > 5000) this.restoreChecked.delete(this.restoreChecked.keys().next().value!);
+    try {
+      if (this.rows(account).length) return false;
+      const s0 = this.settings(account);
+      if (s0.stt || s0.tts) return false;
+      const p = JSON.parse(decrypt(raw)) as { v?: number; k?: string; o?: string; setups?: { n?: Notes; key?: string }[]; stt?: string | null; tts?: string | null };
+      if (p.v !== 1 || p.k !== 'voice' || p.o !== account || !Array.isArray(p.setups)) return false;
+      const aiRefs = new Set(aiVault(this.st).list(account).map((k) => k.ref));
+      const refs = new Set<string>();
+      for (const { n, key } of p.setups.slice(0, 20)) {
+        if (!n || n.kind !== MARK || !n.ref || !n.service) continue;
+        let def: VoiceServiceDef;
+        try {
+          def = voiceServiceDef(n.service);
+        } catch {
+          continue;
+        }
+        const notes: Notes = { ...n };
+        // the AI key it used is not back (yet): keep the key itself so the voice still works
+        if (notes.aiKeyRef && !aiRefs.has(notes.aiKeyRef)) delete notes.aiKeyRef;
+        const host = notes.baseUrl ? new URL(notes.baseUrl).hostname : new URL(def.baseUrl || 'https://aistudio.google.com').hostname;
+        this.st.insertVault(account, { name: `${notes.label} voice key`, domain: host, usernameEnc: encrypt(`Voice · ${def.label}`), passwordEnc: encrypt(key ?? ''), notesEnc: encrypt(JSON.stringify(notes)) });
+        refs.add(notes.ref);
+      }
+      const keep = (x: string | null | undefined) => (x === DEVICE_VOICE || (x && refs.has(x)) ? x : null);
+      this.save(account, { stt: keep(p.stt), tts: keep(p.tts), health: {} });
+      logger.info('voice setup put back from the app copy', { setups: refs.size });
+      return refs.size > 0 || Boolean(keep(p.tts));
+    } catch (e) {
+      logger.warn('voice setup restore failed', { err: String(e) });
+      return false;
+    }
   }
 
   remove(account: string, ref: string): boolean {

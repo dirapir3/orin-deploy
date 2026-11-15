@@ -6,7 +6,7 @@ import { agentOwners, requesterKey } from '../middleware/auth.js';
 import { parseBody } from './util.js';
 import { connectionsFor } from '../agent/sandbox/index.js';
 import { SANDBOX_NEEDS_ADAPTER, SANDBOX_PROVIDERS } from '../agent/sandbox/connections.js';
-import { DEVICE_VOICE, VOICE_NEEDS_ADAPTER, VOICE_SERVICES, voiceSetups } from '../ai/userVoice.js';
+import { DEVICE_VOICE, VOICE_BACKUP_HEADER, VOICE_NEEDS_ADAPTER, VOICE_SERVICES, voiceSetups } from '../ai/userVoice.js';
 import { aiVault } from '../ai/userKeys.js';
 
 /**
@@ -22,6 +22,15 @@ export function setupRouter(deps: Deps): Router {
   };
   const conns = () => connectionsFor(agent().services);
   const voice = () => voiceSetups(agent().store);
+  // after a restart lost the saved data: the voice setup comes back from the app's copy first
+  r.use((req, _res, next) => {
+    try {
+      if (deps.agent && req.header(VOICE_BACKUP_HEADER)) voice().restore(requesterKey(req), req.header(VOICE_BACKUP_HEADER));
+    } catch {
+      // never in the way
+    }
+    next();
+  });
   /** close computers on a connection that was removed or switched off (only this account's) */
   const retire = (account: string, id: string, why: string) => {
     const owners = new Set(agentOwners(account));
@@ -149,6 +158,8 @@ export function setupRouter(deps: Deps): Router {
         .map((k) => ({ ref: k.ref, label: k.label, provider: k.provider, baseUrl: k.baseUrl || undefined, usableFor: VOICE_SERVICES.filter((s) => s.aiKeyProviders.includes(k.provider)).map((s) => s.id) }))
         .filter((k) => k.usableFor.length),
       ...voice().list(account),
+      // the app's backup copy (only this server can open it): sent back as X-Orin-Voice after a restart
+      sealed: voice().sealed(account),
     };
   };
 
