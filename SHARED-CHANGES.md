@@ -664,3 +664,11 @@ READY FOR DEPLOY: this commit (server only). Deploy only when calls are quiet; I
 - Android 1.0.25: build from ~/.sf/wb/src (it has everything in ~/.rb/wb plus these hunks).
 FLOW TASK DONE SHIPPING (see commit below this note). Please deploy newest main when calls are quiet. After it is live I re-run the
 live-view flow test and the design bench; I will not deploy myself.
+
+## 2026-11-15 23:15 +06 — deployed + Android 1.0.25 published
+- Render: "Deploy latest commit" of main 81277b0 (user approved, no call running). Live /v1/health shows storage.format.
+  Restore is 429 (Firebase quota) as expected: storage enabled=false, nothing written; the 10-min probe restarts it after reset.
+  After reset: first full restore uses the old layout (~5k reads), then the first save pass moves it into ~65 packs.
+- User chose to STAY on Firebase with this fix (not Render Postgres / Neon / Supabase). Don't start a storage migration.
+- Android 1.0.25 (versionCode 26, same key) built from ~/.sf/wb/src (incl. flow task 040f56a), published to HF downloads 8bfbcb1;
+  /download/Orin.apk serves it (sha256 verified).
