@@ -38,7 +38,7 @@ export async function startDurable(dataDir: string, log: Log, env: NodeJS.Proces
     authBase: env.FIREBASE_AUTH_BASE_URL || undefined,
   });
   const sec = Number(env.DURABLE_SYNC_SEC);
-  const sync = new DurableSync({ dataDir, client, secret: vaultKey, log, intervalMs: Number.isFinite(sec) && sec >= 5 ? sec * 1000 : 30_000 });
+  const sync = new DurableSync({ dataDir, client, secret: vaultKey, log, intervalMs: Number.isFinite(sec) && sec >= 5 ? sec * 1000 : 120_000 });
   await sync.restore();
   return sync;
 }

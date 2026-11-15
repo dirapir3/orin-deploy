@@ -43,7 +43,15 @@ export class FirestoreError extends Error {
   }
 }
 
+/** Billed Firestore operations since this process started (what the free daily limit counts). */
+export interface FsUsage {
+  reads: number;
+  writes: number;
+  deletes: number;
+}
+
 export class FirestoreClient {
+  readonly usage: FsUsage = { reads: 0, writes: 0, deletes: 0 };
   private token = '';
   private tokenExp = 0;
   private readonly fetch: typeof fetch;
@@ -97,26 +105,57 @@ export class FirestoreClient {
 
   async get(collection: string, id: string): Promise<FsDoc | null> {
     const r = await this.req(`${this.docsRoot}/${collection}/${encodeURIComponent(id)}`);
+    this.usage.reads++; // a missing document is billed as one read too
     if (r.status === 404) return null;
     if (!r.ok) throw new FirestoreError(`Firestore get ${collection}/${id}: ${r.status} ${await safeText(r)}`, r.status);
     return toDoc((await r.json()) as RawDoc);
   }
 
   /** Lists every document in a collection (paged). */
-  async list(collection: string, fieldMask?: string[]): Promise<FsDoc[]> {
+  async list(collection: string, fieldMask?: string[], pageSize = 300): Promise<FsDoc[]> {
     const out: FsDoc[] = [];
     let pageToken = '';
     for (let i = 0; i < 10_000; i++) {
-      const q = new URLSearchParams({ pageSize: '300' });
+      const q = new URLSearchParams({ pageSize: String(pageSize) });
       if (pageToken) q.set('pageToken', pageToken);
       for (const f of fieldMask ?? []) q.append('mask.fieldPaths', f);
       const r = await this.req(`${this.docsRoot}/${collection}?${q}`);
       if (!r.ok) throw new FirestoreError(`Firestore list ${collection}: ${r.status} ${await safeText(r)}`, r.status);
       const j = (await r.json()) as { documents?: RawDoc[]; nextPageToken?: string };
+      this.usage.reads += Math.max(1, j.documents?.length ?? 0);
       for (const d of j.documents ?? []) out.push(toDoc(d));
       if (!j.nextPageToken) break;
       pageToken = j.nextPageToken;
     }
+    return out;
+  }
+
+  /**
+   * Documents whose id is >= fromId and < toId (by document name), without their fields when
+   * namesOnly. Billed one read per document returned (at least one), unlike list(), which pays
+   * for every document in the collection.
+   */
+  async listRange(collection: string, fromId: string, toId: string, namesOnly = true): Promise<FsDoc[]> {
+    const ref = (id: string) => ({ referenceValue: `projects/${this.o.projectId}/databases/(default)/documents/${collection}/${id}` });
+    const structuredQuery: Record<string, unknown> = {
+      from: [{ collectionId: collection }],
+      where: {
+        compositeFilter: {
+          op: 'AND',
+          filters: [
+            { fieldFilter: { field: { fieldPath: '__name__' }, op: 'GREATER_THAN_OR_EQUAL', value: ref(fromId) } },
+            { fieldFilter: { field: { fieldPath: '__name__' }, op: 'LESS_THAN', value: ref(toId) } },
+          ],
+        },
+      },
+      orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+    };
+    if (namesOnly) structuredQuery.select = { fields: [{ fieldPath: '__name__' }] };
+    const r = await this.req(`${this.docsRoot}:runQuery`, { method: 'POST', body: JSON.stringify({ structuredQuery }) });
+    if (!r.ok) throw new FirestoreError(`Firestore query ${collection}: ${r.status} ${await safeText(r)}`, r.status);
+    const rows = (await r.json()) as { document?: RawDoc }[];
+    const out = (Array.isArray(rows) ? rows : []).filter((x) => x.document).map((x) => toDoc(x.document!));
+    this.usage.reads += Math.max(1, out.length);
     return out;
   }
 
@@ -129,6 +168,10 @@ export class FirestoreClient {
     };
     const r = await this.req(`${this.docsRoot}:commit`, { method: 'POST', body: JSON.stringify(body) });
     if (!r.ok) throw new FirestoreError(`Firestore commit: ${r.status} ${await safeText(r)}`, r.status);
+    for (const w of writes) {
+      if (w.op === 'delete') this.usage.deletes++;
+      else this.usage.writes++;
+    }
   }
 }
 
