@@ -115,6 +115,8 @@ export class DurableSync {
   private known = new Map<string, Known>();
   /** Paths that exist remotely but could not be restored: never deleted remotely. */
   private protectedPaths = new Set<string>();
+  /** Some files of the start-up restore were lost to Firestore's daily quota (the rest came back). */
+  private restoreHitQuota = false;
   private recoveryMarker: { id: string; rel: string; v: string; rows: number } | null = null;
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
@@ -191,7 +193,8 @@ export class DurableSync {
 
   /** The start-up restore was lost to Firestore's daily quota (429): saving is off and the data folder is blank. */
   quotaBlocked(): boolean {
-    return !this.st.restored && /\b429\b|RESOURCE_EXHAUSTED|quota/i.test(this.st.lastError ?? '');
+    // also when the restore finished but files were lost to the quota: those files stay blank (and unsaved) until a fresh restore
+    return this.restoreHitQuota || (!this.st.restored && /\b429\b|RESOURCE_EXHAUSTED|quota/i.test(this.st.lastError ?? ''));
   }
 
   /** One cheap read: true when Firestore answers again (the quota reset). */
@@ -287,6 +290,7 @@ export class DurableSync {
             continue;
           }
           this.st.restoreFailures++;
+          if (/\b429\b|RESOURCE_EXHAUSTED|quota/i.test((e as Error).message)) this.restoreHitQuota = true;
           if (rel) this.protectedPaths.add(rel);
           // Keep the entry known so it is never treated as "deleted locally".
           if (rel) this.remote.set(rel, { id: d.id, h: getStr(d, 'h'), v: getStr(d, 'v'), n: getInt(d, 'n') });
