@@ -334,8 +334,33 @@ def serve():
             return snapshot(p, int(a.get('offset', 0)), int(a.get('limit', 6000)))
         if kind == 'screenshot':
             os.makedirs(SHOTS, exist_ok=True)
-            path = os.path.join(SHOTS, f'shot-{time.strftime("%Y%m%d-%H%M%S")}.png')
-            p.screenshot(path=path, full_page=bool(a.get('full_page')))
+            # highlight: the control an approval card is about, scrolled into view and outlined for the shot
+            mark = None
+            if a.get('highlight') is not None:
+                try:
+                    mark = p.locator(f'[data-orin-ref="{int(a["highlight"])}"]').first
+                    if mark.count() == 0:
+                        mark = None
+                    else:
+                        mark.scroll_into_view_if_needed(timeout=4000)
+                        mark.evaluate("el => { el.dataset.orinOutline = el.style.outline || ''; el.dataset.orinOffset = el.style.outlineOffset || ''; el.style.outline = '3px solid #ff3b6b'; el.style.outlineOffset = '2px'; }")
+                except Exception:
+                    mark = None
+            jpeg = bool(a.get('card'))
+            path = os.path.join(SHOTS, f'{"card" if jpeg else "shot"}-{time.strftime("%Y%m%d-%H%M%S")}-{secrets.token_hex(3)}.{"jpg" if jpeg else "png"}')
+            try:
+                if jpeg:
+                    p.screenshot(path=path, type='jpeg', quality=72)
+                else:
+                    p.screenshot(path=path, full_page=bool(a.get('full_page')))
+            finally:
+                if mark is not None:
+                    try:
+                        mark.evaluate("el => { el.style.outline = el.dataset.orinOutline || ''; el.style.outlineOffset = el.dataset.orinOffset || ''; delete el.dataset.orinOutline; delete el.dataset.orinOffset; }")
+                    except Exception:
+                        pass
+            if jpeg:
+                return {'ok': True, 'url': p.url, 'title': p.title(), 'screenshot': path}
             return {**snapshot(p, limit=1500), 'screenshot': path}
         if kind == 'tabs':
             return {'ok': True, 'tabs': [{'n': i + 1, 'url': t.url, 'title': t.title()} for i, t in enumerate(ctx.pages)]}

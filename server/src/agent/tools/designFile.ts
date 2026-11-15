@@ -397,7 +397,7 @@ export const matchDesignTool = defineTool({
     return {
       ok: true,
       content:
-        `${pass ? 'MATCHES' : 'NOT YET'}: ${pass ? 'the build is faithful to the design.' : 'the build is still visibly different from the design. Fix the differences below, then run match_design again.'}\n` +
+        `${pass ? (verdict ? 'MATCHES: the build is faithful to the design.' : 'MATCHES BY MEASUREMENT ONLY (NOT SEEN): the pixel and box measurements pass, but no model that can see compared the two pictures. Say in your answer that it was matched by measurement only.') : 'NOT YET: the build is still visibly different from the design. Fix the differences below, then run match_design again.'}\n` +
         `Checked ${run.url} at ${size.width}x${size.height} (${size.kind}) with ${run.engine}.\n\n${measured}\n\n` +
         (verdict ? `Side by side:\n${verdict}` : 'The side-by-side look was skipped (no model that can see pictures answered); go by the measurements.') +
         (files ? `\n\n${files}` : ''),

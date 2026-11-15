@@ -35,6 +35,10 @@ export interface ApprovalCard {
   fields?: { label: string; value: string }[];
   /** the content itself, in full: the email body, the command, the form text */
   content?: string;
+  /** a picture of what is reviewed: the browser page with the control outlined (a /v1/media URL) */
+  image?: string;
+  /** a page the user can open from the card, e.g. the live view of the browser */
+  url?: string;
 }
 
 /** A login or key the user types into a secure field; it goes straight to the Secure Vault. */
@@ -63,8 +67,10 @@ export interface AskInput {
   fields?: { label: string; value: string }[];
   choices?: string[];
   tool?: string;
-  /** step: the page the user opens */
+  /** step: the page the user opens; approval: a page to watch (the browser's live view) */
   url?: string;
+  /** approval: a screenshot of what is reviewed */
+  image?: string;
   /** secret: where the value is saved */
   secret?: SecretSpec;
 }
@@ -138,7 +144,7 @@ export interface ToolDef<S extends z.ZodType = z.ZodType> {
   /** Saves user data (memory, notes...): hidden in incognito chats. */
   writes?: boolean;
   /** Risky action: return a card to show the user for approval before the tool runs, or null when no approval is needed. */
-  approval?: (args: z.infer<S>, ctx: ToolContext) => ApprovalCard | null;
+  approval?: (args: z.infer<S>, ctx: ToolContext) => ApprovalCard | null | Promise<ApprovalCard | null>;
   /** Overrides the default tool timeout (e.g. tools that wait for the user). */
   timeoutMs?: number;
   handler: (args: z.infer<S>, ctx: ToolContext) => Promise<ToolResult>;

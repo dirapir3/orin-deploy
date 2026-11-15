@@ -6,6 +6,7 @@ import { SANDBOX_WORKDIR, sandboxPath, shq, type SandboxSession } from '../sandb
 import { holdSecret, redactSecrets, resolveSecrets, secretsSchema } from '../sandbox/secrets.js';
 import { BROWSER_PY, BROWSER_PY_VERSION } from '../sandbox/browserScript.js';
 import { revealLogin } from '../vault.js';
+import { saveMediaBytes } from './image.js';
 import { exportSignins, forgetSignins, savedSigninsRev, signinSites, stageSignins } from '../browserState.js';
 import { hide, log, sandboxNeeds, secretNetRisk, short, withSandbox } from './sandbox.js';
 
@@ -183,6 +184,28 @@ interface PageResult {
 
 /** The last page each owner saw, so an approval card can name the page and the control. */
 const lastPage = new Map<string, { url: string; elements: El[] }>();
+/** The live-view link each owner last opened, so an approval card can offer "watch it" without starting anything. */
+const liveLink = new Map<string, string>();
+
+/**
+ * A picture for an approval card: the browser page as it is now, the control about to be pressed scrolled
+ * into view and outlined. Best effort: a card without a picture is still a card.
+ */
+async function approvalShot(ctx: ToolContext, ref?: number): Promise<string | undefined> {
+  try {
+    const r = await runBrowser(ctx, { action: 'screenshot', card: true, ...(ref !== undefined ? { highlight: ref } : {}) });
+    if (!r.ok || !r.screenshot) return undefined;
+    const bytes = await withSandbox(ctx, async (s) => {
+      const b = await s.readFile(r.screenshot!);
+      await s.exec(`rm -f ${shq(r.screenshot!)}`, { timeoutMs: 10_000 }).catch(() => undefined);
+      return b;
+    });
+    if (!bytes?.length || bytes.length > 3_000_000) return undefined;
+    return saveMediaBytes(ctx.services, ctx, bytes, 'image/jpeg');
+  } catch {
+    return undefined;
+  }
+}
 
 async function runBrowser(ctx: ToolContext, act: Record<string, unknown>, envs: Record<string, string> = {}): Promise<PageResult> {
   return withSandbox(ctx, async (s) => {
@@ -258,7 +281,7 @@ export const sandboxBrowserTool = defineTool({
   label: (a) => (a.action === 'open' ? `Opening ${short(a.url ?? '', 40)}…` : a.action === 'type' && a.login ? 'Signing in…' : `Browser: ${a.action}…`),
   needs: ({ services, owner }) => sandboxNeeds(services, owner),
   timeoutMs: 170_000,
-  approval: (a, ctx) => {
+  approval: async (a, ctx) => {
     if (!a.confirm || !['click', 'press', 'type'].includes(a.action)) return null;
     const page = lastPage.get(ctx.owner);
     const el = a.ref ? page?.elements.find((e) => e.ref === a.ref) : undefined;
@@ -268,11 +291,18 @@ export const sandboxBrowserTool = defineTool({
       host = page?.url ? new URL(page.url).host : '';
     } catch {}
     const filled = (page?.elements ?? []).filter((e) => e.value || e.filled).slice(0, 12);
+    // only when her browser has a page open: a picture is never worth starting a computer for
+    const image = page ? await approvalShot(ctx, el?.ref) : undefined;
     return {
       title: `Press "${short(control, 60)}"${host ? ` on ${host}` : ''}`,
       headline: page?.url ?? '',
-      body: 'Orin wants to press a control in her browser that sends, submits, buys, books or deletes something.',
-      fields: [{ label: 'Page', value: page?.url ?? 'unknown' }, ...filled.map((e) => ({ label: e.name || e.tag, value: e.type === 'password' ? '(hidden)' : e.value ?? '' }))],
+      body: `Orin wants to press a control in her browser that sends, submits, buys, books or deletes something.${image ? ' The picture shows the page now, with that control outlined.' : ''}`,
+      fields: [
+        { label: 'Page', value: page?.url ?? 'unknown' },
+        ...filled.map((e) => ({ label: e.name || e.tag, value: e.type === 'password' ? '(hidden)' : redactSecrets(ctx.owner, e.value ?? '') })),
+      ],
+      ...(image ? { image } : {}),
+      ...(liveLink.get(ctx.owner) ? { url: liveLink.get(ctx.owner) } : {}),
     };
   },
   handler: async (a, ctx) => {
@@ -280,6 +310,7 @@ export const sandboxBrowserTool = defineTool({
       if (!ctx.incognito) await withSandbox(ctx, (s) => exportSignins(ctx.services.store, ctx.owner, s)).catch(() => -1);
       await runBrowser(ctx, { action: 'stop' });
       lastPage.delete(ctx.owner);
+      liveLink.delete(ctx.owner);
       return { content: `Closed the browser.${ctx.incognito ? '' : ' Its sign-ins are kept for next time, also on a fresh computer.'}`, summary: 'Closed browser' };
     }
     if (a.action === 'signins') {
@@ -350,6 +381,7 @@ export const sandboxLiveViewTool = defineTool({
     const base = await withSandbox(ctx, async (s) => (s.publicUrl ? s.publicUrl(6080) : ''));
     if (!base) return { ok: false, content: 'The live view needs the cloud computer (E2B).', summary: 'No live view' };
     const url = `${base.replace(/\/$/, '')}/vnc.html?autoconnect=1&resize=scale&reconnect=1&show_dot=1&password=${encodeURIComponent(r.password)}`;
+    liveLink.set(ctx.owner, url);
     log(ctx, 'command', 'Opened the live view');
     return {
       content: `Live view: ${url}\nIt shows your screen (the browser opens there once you use sandbox_browser) and works while your computer is on. Give the user this link as it is.`,

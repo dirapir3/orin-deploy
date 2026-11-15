@@ -163,12 +163,19 @@ export async function executeTool(tool: ToolDef | undefined, call: ToolCall, ctx
     return { ok: false, content: `Error: invalid arguments for ${call.name}: ${z.prettifyError(parsed.error)}. Fix them and try again.`, summary: 'Bad arguments' };
   }
   // Risky actions wait for the user's approval first (outside the tool timeout).
-  const card = tool.approval?.(parsed.data, ctx) ?? null;
+  // (async: a card can carry a screenshot taken just now, e.g. the browser page with the control outlined)
+  let card: Awaited<ReturnType<NonNullable<typeof tool.approval>>> = null;
+  try {
+    card = (await tool.approval?.(parsed.data, ctx)) ?? null;
+  } catch (e) {
+    if (ctx.signal.aborted) throw e;
+    return { ok: false, content: `Error: could not prepare the approval for ${call.name}: ${(e as Error)?.message ?? e}. Nothing was done.`, summary: 'Approval failed' };
+  }
   if (card) {
     if (!ctx.ask) {
       return { ok: false, content: `Error: ${call.name} needs the user's approval, but nobody can answer right now. Do not retry; tell the user what you would do and ask them to confirm in chat.`, summary: 'Needs approval' };
     }
-    const r = await ctx.ask({ kind: 'approval', title: card.title, body: card.body, headline: card.headline, content: card.content, fields: card.fields, tool: call.name });
+    const r = await ctx.ask({ kind: 'approval', title: card.title, body: card.body, headline: card.headline, content: card.content, fields: card.fields, url: card.url, image: card.image, tool: call.name });
     if (r.decision === 'change') {
       return { ok: false, content: `The user did not approve yet and asked for changes: "${r.answer ?? ''}". Apply the changes and call ${call.name} again (they will be asked again).`, summary: 'Changes requested' };
     }

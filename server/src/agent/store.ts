@@ -129,6 +129,8 @@ export interface PromptMeta {
   headline?: string;
   content?: string;
   url?: string;
+  /** a screenshot of what an approval is about (a /v1/media URL) */
+  image?: string;
   secret?: { name: string; domain: string; what: 'login' | 'password' | 'api_key' };
 }
 export type PromptStatus = 'pending' | 'answered' | 'expired' | 'cancelled';
@@ -143,6 +145,7 @@ export interface PromptRec {
   headline: string | null;
   content: string | null;
   url: string | null;
+  image: string | null;
   secret: PromptMeta['secret'] | null;
   taskId: string | null;
   tool: string | null;
@@ -272,6 +275,7 @@ const toPrompt = (r: Row): PromptRec => {
   headline: meta.headline ?? null,
   content: meta.content ?? null,
   url: meta.url ?? null,
+  image: meta.image ?? null,
   secret: meta.secret ?? null,
   taskId: sn(r.task_id),
   tool: sn(r.tool),
@@ -795,6 +799,7 @@ export class AgentStore {
       ...(v.headline ? { headline: v.headline.slice(0, 300) } : {}),
       ...(v.content ? { content: v.content.slice(0, 30_000) } : {}),
       ...(v.url ? { url: v.url.slice(0, 2000) } : {}),
+      ...(v.image ? { image: v.image.slice(0, 2000) } : {}),
       ...(v.secret ? { secret: v.secret } : {}),
     };
     this.run(

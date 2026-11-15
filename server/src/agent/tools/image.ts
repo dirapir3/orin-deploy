@@ -10,10 +10,15 @@ export interface ImageOut {
 }
 
 function saveMedia(svc: AgentServices, ctx: ToolContext, b64: string, mime: string): string {
+  return saveMediaBytes(svc, ctx, Buffer.from(b64, 'base64'), mime);
+}
+
+/** Keeps a picture on the server (served under /v1/media with an unguessable name) and returns its URL. */
+export function saveMediaBytes(svc: AgentServices, ctx: ToolContext, bytes: Uint8Array, mime: string): string {
   mkdirSync(svc.mediaDir, { recursive: true });
   const ext = mime.includes('jpeg') ? 'jpg' : mime.includes('webp') ? 'webp' : 'png';
   const file = `${randomUUID()}.${ext}`;
-  writeFileSync(join(svc.mediaDir, file), Buffer.from(b64, 'base64'));
+  writeFileSync(join(svc.mediaDir, file), bytes);
   return `${ctx.baseUrl}/v1/media/${file}`;
 }
 

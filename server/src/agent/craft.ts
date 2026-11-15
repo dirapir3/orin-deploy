@@ -197,6 +197,10 @@ export class WorkTracker {
   private designMatched = false;
   private designRounds = 0;
   private designHeld = false;
+  /** the last visual check passed without anyone seeing the result (no render, or no model that can see) */
+  private visualLimit: string | null = null;
+  /** the last visual check could not run at all after UI work (no computer, no browser...) */
+  private visualFail: string | null = null;
   /** the Code Auditor was started (code_audit start/recheck) and has not given its verdict yet */
   private auditOpen = false;
 
@@ -232,6 +236,17 @@ export class WorkTracker {
       }
     }
     if (ok && VERIFY_UI.has(name)) this.uiDirty = false;
+    if (VERIFY_UI.has(name)) {
+      const first = (content.split('\n')[0] ?? '').slice(0, 240);
+      if (!ok) this.visualFail = `${name} could not run: ${content.replace(/\s+/g, ' ').slice(0, 200)}`;
+      else if (/\(NOT SEEN\)/.test(first)) {
+        this.visualFail = null;
+        this.visualLimit = `${name}: ${first}`;
+      } else {
+        this.visualFail = null;
+        this.visualLimit = null;
+      }
+    }
     if (ok && name === 'design_spec') this.design = true;
     if (this.design && ok && ['write_file', 'sandbox_write_file', 'sandbox_write_files', 'sandbox_edit_file'].includes(name) && this.uiDirty) {
       this.designDirty = true;
@@ -298,10 +313,12 @@ export class WorkTracker {
         this.designRounds === 0
           ? 'Before you finish: you built from the user\'s design file but have not compared the result with it. Call match_design now (design = the picture path from the [Picture ... saved as ...] note, plus site, path or url of your build), fix every difference it lists, and run it again until it says MATCHES (up to four rounds). Then give your final answer with the match it reached.'
           : 'Before you finish: match_design still says NOT YET. Fix the differences it listed (start with the biggest), then run match_design again. If after four rounds it still does not match, say so in your answer with the score and what is still different.';
+      if (this.visualFail) note += ` Your last visual check failed (${this.visualFail.slice(0, 160)}). If it still cannot run, fix the cause if you can; otherwise say plainly in your answer that the build was NOT checked against the design and why. Never call it matched or verified.`;
       this.designDirty = false;
       this.uiDirty = false;
     } else if (this.uiDirty && this.canReview) {
       note = 'Before you finish: you changed the files of a page or app screen and have not looked at the result. Call review_design on it now, fix every high or medium issue it reports, then give your final answer.';
+      if (this.visualFail) note += ` Your last visual check failed (${this.visualFail.slice(0, 160)}). If it still cannot run, say plainly in your answer that the screens were not visually checked and why; never call them checked, matching or verified.`;
       this.uiDirty = false;
     } else if (this.codeDirty && this.canRun) {
       note = 'Before you finish: you wrote or changed code and have not run it since. Run it (or its tests or build) with sandbox_run, fix any error, then give your final answer.';
@@ -309,6 +326,13 @@ export class WorkTracker {
     } else if (this.auditOpen) {
       note = 'Before you finish: you started the Code Auditor and it has not given its verdict. Call code_audit with action finish on the same project now, then report that verdict as it is (only READY means ready).';
       this.auditOpen = false;
+    } else if ((this.visualFail || this.visualLimit) && claimsVisualCheck(reply)) {
+      // never claim a look that did not happen
+      note = this.visualFail
+        ? `Before you finish: the visual check did not run (${this.visualFail.slice(0, 200)}), so nobody has seen the result. Fix the cause and run it again if you can; otherwise say plainly in your answer that the screens were not visually checked and why. Do not say it matches, looks right or is verified.`
+        : `Before you finish: ${this.visualLimit!.slice(0, 220)} Your answer reads as if the result was looked at. Say plainly what was checked (code/measurements) and that nobody saw the screenshots, or run the check again when a model that can see is available.`;
+      this.visualFail = null;
+      this.visualLimit = null;
     } else if (this.lastFail.size) {
       const [name, err] = [...this.lastFail.entries()].pop()!;
       const claimsSuccess = /\b(done|ready|live|finished|built|published|sent|saved|deployed|installed|fixed|works now)\b/i.test(reply) && !/\b(not|couldn'?t|could not|failed|didn'?t|unable|isn'?t|wasn'?t)\b/i.test(reply);
@@ -328,6 +352,13 @@ export class WorkTracker {
     if (note) this.gates++;
     return note;
   }
+}
+
+/** Does a final answer claim the screens were looked at or match, without naming a limit on that check? */
+export function claimsVisualCheck(reply: string): boolean {
+  const claims = /\b(pixel[- ]?perfect|matches (the|your) design|match(es|ed)? (it|the mockup|the screenshot)|identical|visually (checked|verified|confirmed)|verified (the )?(design|screens?|look|ui)|looks? (right|great|good|perfect|correct|exactly like)|(design|ui|screens?|layout) (is|are) verified)\b/i.test(reply);
+  const admits = /\b(not (been )?(seen|verified|visually|checked against)|could ?n[o']t (be )?(check|run|see|render|verif)|did ?n[o']t (run|render|get checked)|measurements? only|by measurement|without (a )?(visual|screenshot)|no model that can see|unverified|not checked)\b/i.test(reply);
+  return claims && !admits;
 }
 
 /** Does a user message correct Orin or state a lasting preference? ("no, not like that", "always use...", "from now on...") */

@@ -318,9 +318,15 @@ export const reviewDesignTool = defineTool({
     const meds = list.filter((i) => i.severity === 'medium').length;
     const score = vision?.score ?? null;
     const pass = highs === 0 && meds <= 1 && (score === null || score >= PASS_SCORE);
+    // what was actually looked at: a pass from code reading alone is not a visual check
+    const seen = Boolean(rendered) && Boolean(vision);
     const shots = (rendered?.views ?? []).filter((v) => v.shot).map((v) => v.shot!.replace(`${SANDBOX_WORKDIR}/`, ''));
     const lines = [
-      pass ? 'PASSED the design review.' : 'NOT READY: fix the issues below, then run review_design again.',
+      pass
+        ? seen
+          ? 'PASSED the design review.'
+          : `PASSED ONLY THE CHECKS THAT RAN (NOT SEEN): ${!rendered ? 'the page was never rendered in a browser, only its code was read' : 'it was rendered, but no model that can see looked at the screenshots'}. Do not call it visually checked or verified; say this limitation in your answer.`
+        : 'NOT READY: fix the issues below, then run review_design again.',
       score !== null ? `Visual score: ${score}/10${vision?.verdict ? ` - ${vision.verdict}` : ''}` : '',
       list.length ? `Issues (${highs} high, ${meds} medium, ${list.length - highs - meds} low), most important first:` : 'No issues found.',
       ...list.slice(0, 14).map((i, n) => `${n + 1}. [${i.severity}] ${i.issue}${i.fix ? ` Fix: ${i.fix}` : ''}`),
