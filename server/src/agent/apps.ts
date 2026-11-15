@@ -23,7 +23,7 @@ export const BUILT_IN_APPS: BuiltInApp[] = [
   { id: 'schedules', name: 'Schedules & reminders', what: 'Reminders and tasks on a timetable', tools: ['create_reminder', 'list_reminders', 'cancel_reminder', 'create_schedule', 'delete_schedule', 'list_schedules', 'update_schedule'] },
   { id: 'vault', name: 'Secure Vault', what: 'Encrypted logins it uses for you', tools: ['vault_list'] },
   { id: 'goals', name: 'Goals', what: 'Long-term goals with a plan, progress and check-ins', tools: ['create_goal', 'update_goal', 'list_goals'] },
-  { id: 'team', name: 'Team', what: 'Hands parts of a job to Nova, Sage, Max or Orin to work on in parallel', tools: ['ask_teammate', 'teammate_result'] },
+  { id: 'team', name: 'Team', what: 'Hands parts of a job to Aura, Nova, Sage or Max to work on in parallel', tools: ['ask_teammate', 'teammate_result'] },
 ];
 
 const IDS = new Set(BUILT_IN_APPS.map((a) => a.id));

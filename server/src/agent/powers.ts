@@ -12,7 +12,7 @@ import type { AgentStore } from './store.js';
  * - Goals with a plan, progress and check-ins (Meta Muse's goals and action plans).
  * - Proactive mode: a morning brief and quiet check-ins that only speak up when something needs the
  *   user (Claude Duet's daily brief and "only when it needs your attention").
- * - A team: one agent hands part of a job to another (Orin, Nova, Sage, Max), who works on it in
+ * - A team: one agent hands part of a job to another (Aura, Nova, Sage, Max), who works on it in
  *   parallel in the background and passes the result back (Grok Bot's bots that work together).
  *
  * Everything lives in the per-agent setup_settings rows, so the durable Firestore mirror keeps it
@@ -395,7 +395,7 @@ function teammateResult(t: NonNullable<ReturnType<AgentStore['getTaskById']>>, w
 export const askTeammateTool = defineTool({
   name: 'ask_teammate',
   description:
-    "Hand part of a job to a teammate (Orin, Nova, Sage or Max: the user's other agents). The teammate works on it in parallel in the background with its own computer, tools and memory, and the result comes back to you. Good for splitting big work (one researches while you build, one reviews your code, one writes the copy). Give complete instructions: the teammate does not see this chat. Set wait_seconds to wait for the result (up to 9 minutes), or 0 to keep working and collect it later with teammate_result.",
+    "Hand part of a job to a teammate (Aura, Nova, Sage or Max: the user's other agents; Aura's id is orin). The teammate works on it in parallel in the background with its own computer, tools and memory, and the result comes back to you. Good for splitting big work (one researches while you build, one reviews your code, one writes the copy). Give complete instructions: the teammate does not see this chat. Set wait_seconds to wait for the result (up to 9 minutes), or 0 to keep working and collect it later with teammate_result.",
   schema: z.object({
     teammate: z.enum(TEAM),
     instructions: z.string().min(10).max(8000).describe('Self-contained instructions and everything the teammate needs'),
