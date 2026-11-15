@@ -25,6 +25,40 @@ import { bytes, getBytes, getInt, getStr, int, str, type FirestoreClient, type F
 export const FILES = 'orin_files';
 export const BLOBS = 'orin_blobs';
 export const META = 'orin_meta';
+/** Bump to run the one-time agent-DB repair again (see recoverOrphaned). */
+export const RECOVERY_ID = 'agentdb-race-2026-11-15';
+
+/** Row count, SQLite's own check, and the newest created_at/updated_at (ms) in a database file. */
+function sqliteStats(src: string | Buffer): { ok: boolean; rows: number; latest: number } {
+  // Checked on a private copy: a WAL-mode file cannot be opened read-only without its -shm, and the original stays untouched.
+  const file = join(tmpdir(), `orin-durable-check-${process.pid}-${randomUUID()}.sqlite`);
+  let db: DatabaseSync | null = null;
+  try {
+    writeFileSync(file, typeof src === 'string' ? readFileSync(src) : src);
+    db = new DatabaseSync(file);
+    const chk = db.prepare('PRAGMA quick_check').get() as Record<string, unknown> | undefined;
+    if (!chk || Object.values(chk)[0] !== 'ok') return { ok: false, rows: 0, latest: 0 };
+    let rows = 0;
+    let latest = 0;
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
+    for (const { name } of tables) {
+      const q = `"${name.replace(/"/g, '""')}"`;
+      rows += Number((db.prepare(`SELECT COUNT(*) AS c FROM ${q}`).get() as { c: number }).c);
+      const cols = (db.prepare(`PRAGMA table_info(${q})`).all() as { name: string }[]).map((c) => c.name);
+      for (const c of ['updated_at', 'created_at']) {
+        if (!cols.includes(c)) continue;
+        const m = Number((db.prepare(`SELECT MAX(${c}) AS m FROM ${q}`).get() as { m: number | null }).m ?? 0);
+        if (m > latest) latest = m;
+      }
+    }
+    return { ok: true, rows, latest };
+  } catch {
+    return { ok: false, rows: 0, latest: 0 };
+  } finally {
+    db?.close();
+    for (const sfx of ['', '-wal', '-shm', '-journal']) rmSync(file + sfx, { force: true });
+  }
+}
 const CHUNK = 600_000;
 const COMMIT_BUDGET = 7_000_000; // base64 bytes per commit (Firestore limit is ~10 MB)
 
@@ -81,6 +115,7 @@ export class DurableSync {
   private known = new Map<string, Known>();
   /** Paths that exist remotely but could not be restored: never deleted remotely. */
   private protectedPaths = new Set<string>();
+  private recoveryMarker: { id: string; rel: string; v: string; rows: number } | null = null;
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
   private readonly st: DurableStatus = {
@@ -138,6 +173,7 @@ export class DurableSync {
     for (let a = 0; a < attempts; a++) {
       try {
         await this.restoreOnce();
+        await this.recoverOrphaned().catch((e) => this.log('warn', `repair check skipped: ${(e as Error).message}`));
         this.st.restored = true;
         this.log('info', `restored ${this.st.restoredFiles} file(s)${this.st.restoreFailures ? `, ${this.st.restoreFailures} failed` : ''}`);
         return true;
@@ -166,6 +202,61 @@ export class DurableSync {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * One-time repair (RECOVERY_ID). On 2026-11-15 a restart restored the agent DB while the old instance was saving, failed
+   * ("missing chunk 0"), started on a blank DB and saved that blank DB over the good one. The good version's chunks were left
+   * behind: nothing deletes chunks that no manifest points at. This finds complete, decryptable leftover versions of the
+   * agent DB, keeps those that pass SQLite's check and hold more rows than the current copy, and puts back the one with the
+   * newest data. The marker in orin_meta is written only after a sync pass has saved it, so a crash before then retries.
+   */
+  private async recoverOrphaned(): Promise<void> {
+    const rel = 'orin-agent.sqlite';
+    const markerId = `recovered_${RECOVERY_ID}`;
+    if (await this.o.client.get(META, markerId)) return;
+    const id = this.fileId(rel);
+    const cur = this.remote.get(rel);
+    const versions = new Map<string, Set<number>>();
+    for (const b of await this.o.client.list(BLOBS, ['_none'])) {
+      const [bid, v, i] = b.id.split('_');
+      if (bid !== id || !v || v === cur?.v || !/^\d+$/.test(i ?? '')) continue;
+      if (!versions.has(v)) versions.set(v, new Set());
+      versions.get(v)!.add(Number(i));
+    }
+    const abs = join(this.dir, rel);
+    const local = existsSync(abs) ? sqliteStats(abs) : { ok: true, rows: 0, latest: 0 };
+    let best: { v: string; content: Buffer; rows: number; latest: number } | null = null;
+    for (const [v, idx] of versions) {
+      if (!idx.has(0) || idx.size !== Math.max(...idx) + 1) continue; // a partial upload
+      try {
+        const parts: Buffer[] = [];
+        for (let i = 0; i < idx.size; i++) {
+          const b = await this.o.client.get(BLOBS, `${id}_${v}_${i}`);
+          if (!b) throw new Error('chunk gone');
+          parts.push(this.open(getBytes(b, 'd'), `${id}:${v}:${i}`));
+        }
+        const content = Buffer.concat(parts);
+        const st = sqliteStats(content);
+        this.log('info', `repair: leftover copy ${v}: ${st.ok ? `${st.rows} rows, newest ${new Date(st.latest).toISOString()}` : 'failed its check'}`);
+        if (!st.ok || st.rows <= local.rows) continue;
+        if (!best || st.latest > best.latest) best = { v, content, rows: st.rows, latest: st.latest };
+      } catch (e) {
+        this.log('warn', `repair: leftover copy ${v} unreadable (${(e as Error).message})`);
+      }
+    }
+    if (!best) {
+      await this.o.client.commit([{ op: 'set', collection: META, id: markerId, fields: { t: int(Date.now()), v: str('none'), rows: int(local.rows) } }]);
+      this.log('info', `repair: nothing to recover (current copy has ${local.rows} rows)`);
+      return;
+    }
+    for (const sfx of ['-wal', '-shm']) rmSync(abs + sfx, { force: true });
+    const tmp = `${abs}.durable-${process.pid}.tmp`;
+    writeFileSync(tmp, best.content, { mode: 0o644 });
+    renameSync(tmp, abs);
+    this.protectedPaths.delete(rel);
+    this.recoveryMarker = { id: markerId, rel, v: best.v, rows: best.rows };
+    this.log('warn', `repair: put back agent DB copy ${best.v} (${best.rows} rows vs ${local.rows} in the current copy)`);
   }
 
   private async restoreOnce() {
@@ -289,6 +380,8 @@ export class DurableSync {
           skipped.push(rel);
           continue;
         }
+        // A file whose restore failed keeps its saved copy: never save this run's (likely blank) file over it.
+        if (this.protectedPaths.has(rel)) continue;
         const r = this.remote.get(rel);
         if (r && r.h === f.h) continue;
         await this.upload(rel, f.content(), f.h);
@@ -296,6 +389,12 @@ export class DurableSync {
       for (const [rel, r] of [...this.remote]) {
         if (local.has(rel) || this.protectedPaths.has(rel)) continue;
         await this.remove(rel, r);
+      }
+      if (this.recoveryMarker && !this.protectedPaths.has(this.recoveryMarker.rel)) {
+        const m = this.recoveryMarker;
+        await this.o.client.commit([{ op: 'set', collection: META, id: m.id, fields: { t: int(Date.now()), v: str(m.v), rows: int(m.rows) } }]);
+        this.recoveryMarker = null;
+        this.log('info', 'repair saved: the recovered copy is the saved copy now');
       }
       this.st.skipped = skipped;
       this.st.savedFiles = this.remote.size;

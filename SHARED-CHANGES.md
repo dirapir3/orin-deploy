@@ -5,6 +5,11 @@
   the new instance was restoring -> "could not restore one file (missing chunk 0)" -> server ran on an EMPTY agent DB (remote copy
   stayed safe, path protected). restoreOnce now re-reads that file's manifest and retries (4 tries, 2s/4s/6s) on "missing chunk" /
   "content check failed" only. Test: server/test/durable.test.ts "mid-restore" (fails on old code, passes now). Keep in any copy.
+- ALSO: the blank DB that run started on was SAVED OVER the good copy (protectedPaths only blocked deletes). Now: syncPass never
+  uploads a protected path. One-time repair recoverOrphaned() (RECOVERY_ID 'agentdb-race-2026-11-15', marker orin_meta/recovered_*):
+  on restore, finds complete leftover chunk versions of orin-agent.sqlite (nothing ever deletes orphaned chunks), keeps those that
+  pass PRAGMA quick_check and have more rows than the current copy, puts back the newest; marker written after the next save.
+  Tests: durable.test.ts "one-time repair", "never saves over a file whose restore failed".
 
 ## 2026-11-08 task "Orin: finish memory conflict resolution and deployment" - 3 commits on gh-public main (on 988efb9). Rebase before you push.
 - SERVER (d531c64, 2eaeea7): agent/memory.ts (learned facts by kind, past-conversation summaries, per-project recall, corrections,
