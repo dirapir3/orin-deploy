@@ -97,6 +97,9 @@ export function pagesRouter(store: () => AgentStore | null, deps: PageLinkDeps =
   r.get('/:token', (req: Request, res: Response) => {
     res.setHeader('Content-Security-Policy', PAGE_CSP);
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    // the web app runs cross-origin isolated (COEP credentialless), so a frame inside it must opt in too
+    res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Cache-Control', 'private, no-store');
     res.type('html');
