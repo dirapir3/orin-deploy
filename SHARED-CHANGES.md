@@ -1,5 +1,10 @@
 # Shared source changes other builds must keep
 
+## 2026-11-15 task c490d330 "Orin: put voice-speed fixes and Goals live in one deploy" - on gh-public main (on a1ccc14). Rebase before you push.
+- Server: voice-speed fixes (from f1279eca: voice quota rest survives restarts, voice setup backup copy, 8s first byte on calls, fast model on server keys, /v1/health reports calls) + Goals/proactive/team (from ai-agents-modern e2ad782, 67bb26f, 4f77cad). Conflict in server/src/agent/tools/index.ts: both mailTools (Apps) and powerTools (Goals) kept.
+- Web build source for the NEXT web build: ~/.rel/wb (Apps build source ~/.apps/wb + 4 voice app files from ~/.vfast/build + Goals files from ~/.prov/build: app/goals.tsx, app/_layout.tsx, app/(tabs)/agent.tsx, components/DrawerPanel.tsx, services/agentApi.ts, store/drawer.ts). Build from it so the Apps page, voice copies and Goals stay. Clear .metro-cache before exporting from a copy, or asset paths come out wrong.
+- The old web commit 7545053 on ai-agents-modern is superseded; do not merge that branch.
+
 ## 2026-11-08 task "Orin: finish memory conflict resolution and deployment" - durable restore race fix (server/src/durable/sync.ts)
 - Live restart lost the agent DB for that run: the old instance saved a new DB version (flip manifest + delete old chunks) while
   the new instance was restoring -> "could not restore one file (missing chunk 0)" -> server ran on an EMPTY agent DB (remote copy
